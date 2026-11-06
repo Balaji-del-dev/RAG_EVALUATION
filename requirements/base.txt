@@ -1,0 +1,15 @@
+# Django, DRF, PostgreSQL, background jobs
+Django>=5.2,<5.3
+djangorestframework>=3.16
+django-cors-headers>=4.7
+django-filter>=25.1
+psycopg[binary]>=3.2
+python-dotenv>=1.0
+pydantic>=2.10
+pydantic-settings>=2.6
+gunicorn>=23.0
+uvicorn>=0.34
+celery>=5.5
+redis>=5.2
+flower>=2.0
+whitenoise>=6.9

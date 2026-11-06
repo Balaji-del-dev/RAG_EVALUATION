@@ -1,0 +1,18 @@
+{
+  "rest": {
+    "RestGenerator": {
+      "name": "rag-evaluation-bench",
+      "uri": "http://127.0.0.1:8010/api/rag/query/",
+      "method": "post",
+      "headers": {
+        "Content-Type": "application/json",
+        "Cookie": "sessionid=$RAG_SESSION; csrftoken=$RAG_CSRF",
+        "X-CSRFToken": "$RAG_CSRF"
+      },
+      "req_template_json_object": {"question": "$INPUT"},
+      "response_json": true,
+      "response_json_field": "answer",
+      "request_timeout": 300
+    }
+  }
+}

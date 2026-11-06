@@ -1,0 +1,5 @@
+# Tracing. Langfuse activates only when its keys are present in .env.
+opentelemetry-api>=1.30
+opentelemetry-sdk>=1.30
+opentelemetry-exporter-otlp-proto-http>=1.30
+langfuse>=3.0

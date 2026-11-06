@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RAG Evaluation Bench</title>
+    <script>
+      // Apply the saved theme before the first paint, so a dark-theme user never sees a white flash.
+      try {
+        var mode = localStorage.getItem('bench-theme') || 'light'
+        if (mode === 'system') mode = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        document.documentElement.dataset.theme = mode
+        document.documentElement.dataset.accent = localStorage.getItem('bench-accent') || 'blue'
+      } catch (error) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

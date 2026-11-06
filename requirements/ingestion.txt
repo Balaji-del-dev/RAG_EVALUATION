@@ -1,0 +1,7 @@
+# Parsing, storage and chunking
+PyMuPDF>=1.25
+python-docx>=1.1
+minio>=7.2
+langchain-text-splitters>=0.3
+pytesseract>=0.3
+pillow>=11.0

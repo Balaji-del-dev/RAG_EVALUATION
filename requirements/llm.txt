@@ -1,0 +1,4 @@
+# LLM gateway and workflow orchestration
+litellm>=1.60
+langgraph>=0.3
+langchain-core>=0.3

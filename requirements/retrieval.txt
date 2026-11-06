@@ -1,0 +1,8 @@
+# Embeddings, reranking and the two retrieval stores.
+# CPU-only torch: this machine has no working GPU, and the CUDA build is several GB larger.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.5
+sentence-transformers>=3.3
+qdrant-client>=1.13
+opensearch-py>=2.8
+numpy>=1.26

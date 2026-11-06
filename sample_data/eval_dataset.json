@@ -1,0 +1,158 @@
+{
+  "name": "Meridian policies and product",
+  "version": "1",
+  "description": "Hand-written questions over the sample documents: direct questions, paraphrases, multi-part questions and broad requests. The last three cannot be answered from the corpus, so the correct behaviour is to abstain.",
+  "cases": [
+    {
+      "question": "How many days of paid annual leave do full-time employees get?",
+      "reference_answer": "Full-time employees receive 24 days of paid annual leave per calendar year.",
+      "evidence": [
+        "Full-time employees receive 24 days of paid annual leave per calendar year."
+      ]
+    },
+    {
+      "question": "How many unused leave days can be carried over, and when do they expire?",
+      "reference_answer": "Up to 5 unused days can be carried over to the next year. Carried-over days expire on 31 March.",
+      "evidence": [
+        "Up to 5 unused days can be carried over to the next year. Carried-over days expire on 31 March."
+      ]
+    },
+    {
+      "question": "How long is parental leave for primary and secondary caregivers?",
+      "reference_answer": "Primary caregivers receive 16 weeks of paid parental leave. Secondary caregivers receive 4 weeks of paid parental leave.",
+      "evidence": [
+        "Primary caregivers receive 16 weeks of paid parental leave. Secondary caregivers receive 4 weeks of paid parental leave."
+      ]
+    },
+    {
+      "question": "What is the notice period after probation?",
+      "reference_answer": "After probation, the notice period is 60 days.",
+      "evidence": [
+        "After probation, the notice period is 60 days."
+      ]
+    },
+    {
+      "question": "What is the meal allowance during business travel?",
+      "reference_answer": "The meal allowance during business travel is INR 1,500 per day.",
+      "evidence": [
+        "The meal allowance during business travel is INR 1,500 per day."
+      ]
+    },
+    {
+      "question": "What is the minimum password length?",
+      "reference_answer": "Passwords must be at least 14 characters long.",
+      "evidence": [
+        "Passwords must be at least 14 characters long."
+      ]
+    },
+    {
+      "question": "How long are database backups kept?",
+      "reference_answer": "Backups are retained for 35 days.",
+      "evidence": [
+        "Production databases are backed up every night. Backups are retained for 35 days."
+      ]
+    },
+    {
+      "question": "How quickly must a lost laptop be reported?",
+      "reference_answer": "A lost or stolen device must be reported to the security team within 1 hour.",
+      "evidence": [
+        "A lost or stolen device must be reported to the security team within 1 hour."
+      ]
+    },
+    {
+      "question": "How long is the warranty on the Atlas Edge Router, and what does it not cover?",
+      "reference_answer": "The Atlas Edge Router has a 3-year limited hardware warranty. The warranty does not cover damage caused by water or by unauthorized repairs.",
+      "evidence": [
+        "The Atlas Edge Router has a 3-year limited hardware warranty. The warranty does not cover damage caused by water or by unauthorized repairs."
+      ]
+    },
+    {
+      "question": "What is the rate limit of the management API?",
+      "reference_answer": "The management API allows 600 requests per minute for each account.",
+      "evidence": [
+        "The management API allows 600 requests per minute for each account."
+      ]
+    },
+    {
+      "question": "My baby was just born and I am the main carer at home. How much paid time off can I take?",
+      "reference_answer": "Primary caregivers receive 16 weeks of paid parental leave.",
+      "evidence": [
+        "Primary caregivers receive 16 weeks of paid parental leave."
+      ]
+    },
+    {
+      "question": "I left my work computer on a train. What is my deadline for telling someone?",
+      "reference_answer": "A lost or stolen device must be reported to the security team within 1 hour.",
+      "evidence": [
+        "A lost or stolen device must be reported to the security team within 1 hour."
+      ]
+    },
+    {
+      "question": "Can I fly business class on a five hour trip?",
+      "reference_answer": "No. Economy class is the standard for all flights shorter than 8 hours.",
+      "evidence": [
+        "Economy class is the standard for all flights shorter than 8 hours."
+      ]
+    },
+    {
+      "question": "What happens to my training money if I do not spend it this year?",
+      "reference_answer": "Unused learning budget does not carry over to the next year.",
+      "evidence": [
+        "Unused learning budget does not carry over to the next year."
+      ]
+    },
+    {
+      "question": "How fast does support get back to me on each service tier?",
+      "reference_answer": "The Standard plan has a response time of 8 hours. The Premium plan has a response time of 1 hour.",
+      "evidence": [
+        "The Standard plan includes email support during business hours with a response time of 8 hours.",
+        "The Premium plan includes 24x7 phone support with a response time of 1 hour."
+      ]
+    },
+    {
+      "question": "What are the notice periods during and after probation, and how long does probation last?",
+      "reference_answer": "The probation period is 6 months. During probation, the notice period is 15 days. After probation, the notice period is 60 days.",
+      "evidence": [
+        "The probation period for new employees is 6 months.",
+        "During probation, the notice period is 15 days. After probation, the notice period is 60 days."
+      ]
+    },
+    {
+      "question": "How often is data safeguarded, how long is it held, and how often do we check that recovery works?",
+      "reference_answer": "Production databases are backed up every night. Backups are retained for 35 days. A restore test is carried out once every quarter.",
+      "evidence": [
+        "Production databases are backed up every night.",
+        "Backups are retained for 35 days.",
+        "A restore test is carried out once every quarter."
+      ]
+    },
+    {
+      "question": "Explain the leave policy.",
+      "reference_answer": "Full-time employees receive 24 days of paid annual leave per calendar year. Employees receive 12 days of paid sick leave per year. Primary caregivers receive 16 weeks of paid parental leave.",
+      "evidence": [
+        "Full-time employees receive 24 days of paid annual leave per calendar year.",
+        "Employees receive 12 days of paid sick leave per year.",
+        "Primary caregivers receive 16 weeks of paid parental leave."
+      ]
+    },
+    {
+      "question": "Tell me about working from home.",
+      "reference_answer": "Employees may work remotely up to 3 days per week after completing their probation period.",
+      "evidence": [
+        "Employees may work remotely up to 3 days per week after completing their probation period."
+      ]
+    },
+    {
+      "question": "What is the company's dress code for client visits?",
+      "answerable": false
+    },
+    {
+      "question": "What was Meridian Labs' total revenue last year?",
+      "answerable": false
+    },
+    {
+      "question": "Does the Atlas Edge Router support Wi-Fi 7?",
+      "answerable": false
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+# Project-owned infrastructure. Redis, Qdrant and Ollama are shared services already running on
+# this machine; this project keeps to its own Redis databases and `rageval_*` collections.
+services:
+  postgres:
+    image: postgres:17
+    container_name: rageval-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DATABASE_NAME}
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+    ports:
+      - "127.0.0.1:${DATABASE_PORT}:5432"
+    volumes:
+      - rageval_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER} -d ${DATABASE_NAME}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: cgr.dev/chainguard/minio:latest
+    container_name: rageval-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    ports:
+      - "127.0.0.1:9002:9000"
+      - "127.0.0.1:9003:9001"
+    volumes:
+      - rageval_miniodata:/data
+
+  # Off by default: a second JVM is heavy on this machine, which already runs a shared OpenSearch.
+  # Start with: docker compose --profile opensearch up -d opensearch
+  opensearch:
+    image: opensearchproject/opensearch:2
+    container_name: rageval-opensearch
+    profiles: ["opensearch"]
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms256m -Xmx256m"
+    ports:
+      - "127.0.0.1:9201:9200"
+    volumes:
+      - rageval_osdata:/usr/share/opensearch/data
+
+volumes:
+  rageval_pgdata:
+  rageval_miniodata:
+  rageval_osdata:

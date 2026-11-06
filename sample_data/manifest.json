@@ -1,0 +1,73 @@
+{
+  "documents": [
+    {
+      "file": "employee_handbook.md",
+      "visibility": "public"
+    },
+    {
+      "file": "it_security_policy.md",
+      "visibility": "public"
+    },
+    {
+      "file": "product_guide.md",
+      "visibility": "public"
+    },
+    {
+      "file": "customer_contacts.csv",
+      "visibility": "public"
+    },
+    {
+      "file": "integration_runbook.md",
+      "visibility": "public"
+    },
+    {
+      "file": "vendor_notes.md",
+      "visibility": "public"
+    },
+    {
+      "file": "salary_bands_2026.md",
+      "visibility": "restricted"
+    }
+  ],
+  "rag_configs": [
+    {
+      "name": "Hybrid + rerank + MMR",
+      "description": "Full pipeline: BM25 and vector search, RRF fusion, cross-encoder reranking, MMR.",
+      "is_default": true,
+      "retrieval_mode": "hybrid",
+      "chunk_size": 60,
+      "chunk_overlap": 10,
+      "candidate_k": 12,
+      "rerank_top_n": 8,
+      "top_k": 5,
+      "prompt_version": "v3",
+      "rerank_min_score": null
+    },
+    {
+      "name": "Vector only (baseline)",
+      "description": "Vector search alone, with no reranking or MMR. The baseline to beat.",
+      "retrieval_mode": "vector",
+      "chunk_size": 60,
+      "chunk_overlap": 10,
+      "candidate_k": 12,
+      "reranker": "",
+      "rerank_min_score": null,
+      "use_mmr": false,
+      "top_k": 5,
+      "prompt_version": "v3"
+    },
+    {
+      "name": "Hybrid, structure chunks",
+      "description": "Same retrieval as the default, but chunks follow document sections instead of a fixed size.",
+      "retrieval_mode": "hybrid",
+      "chunk_strategy": "structure",
+      "chunk_size": 90,
+      "chunk_overlap": 10,
+      "candidate_k": 12,
+      "rerank_top_n": 8,
+      "top_k": 5,
+      "prompt_version": "v3",
+      "rerank_min_score": null
+    }
+  ]
+}

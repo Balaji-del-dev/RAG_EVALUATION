@@ -1,0 +1,11 @@
+# Optional framework adapters, installed in their OWN environment (venv-frameworks), not in venv/.
+# Sharing one environment forces very old versions (datasets 1.1, ragas 0.3, deepeval 2.9), because
+# they conflict with transformers. They need no torch, and the app calls them as a subprocess.
+#   uv venv venv-frameworks --python 3.12
+#   uv pip install --python venv-frameworks/bin/python -r requirements/evaluation.txt
+ragas>=0.4
+# Ragas 0.4.3 imports a module that langchain-community removed in 0.4.
+langchain-community<0.4
+deepeval>=4.0
+# DeepEval's OllamaModel needs this client.
+ollama>=0.4
