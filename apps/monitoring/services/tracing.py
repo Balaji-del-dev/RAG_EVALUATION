@@ -8,8 +8,9 @@ With Langfuse keys, the spans also go to Langfuse's OpenTelemetry endpoint, so e
 its model and token counts but not its prompt, which holds the source text. The question and answer are attached
 once per question, with personal details masked (see rag_workflow._for_traces).
 
-Only question traffic is sent: chat, streaming chat, search, and evaluation runs. The dashboard polls the API every few
-seconds, and a trace for each of those requests would bury the questions.
+Only question traffic is sent: each chat answer is one trace named "chat", grouped by conversation (Langfuse
+Sessions) and user, with its question and answer; evaluation runs send theirs too. HTTP request spans stay here: the
+dashboard polls the API every few seconds, and a trace for each request would bury the questions.
 """
 
 import base64
@@ -26,12 +27,10 @@ from config.env import env
 
 logger = logging.getLogger(__name__)
 
-# Requests whose trace is worth keeping: the ones that run the pipeline.
-TRACED_PATHS = {"/api/rag/query/": "chat", "/api/rag/query/stream/": "chat", "/api/rag/retrieve/": "search"}
-
 
 class QuestionsOnly(SpanProcessor):
-    """Passes on every span except the request span of a request that ran no pipeline."""
+    """Passes on every span except the HTTP request spans. Each chat answer has its own root span ("chat"), and a
+    trace for every request the dashboard sends would bury the questions."""
 
     def __init__(self, inner: SpanProcessor):
         self.inner = inner
@@ -40,7 +39,7 @@ class QuestionsOnly(SpanProcessor):
         self.inner.on_start(span, parent_context=parent_context)
 
     def on_end(self, span):
-        if span.name == "http.request" and span.attributes.get("http.target") not in TRACED_PATHS:
+        if span.name == "http.request":
             return
         self.inner.on_end(span)
 
@@ -95,8 +94,6 @@ def request_span(request):
     carrier = {"traceparent": request.META.get("HTTP_TRACEPARENT", "")}
     parent = TraceContextTextMapPropagator().extract(carrier) if carrier["traceparent"] else None
     attributes = {"http.method": request.method, "http.target": request.path, "request.id": request.request_id}
-    if request.path in TRACED_PATHS:
-        attributes["langfuse.trace.name"] = TRACED_PATHS[request.path]
     with _tracer().start_as_current_span("http.request", context=parent, attributes=attributes) as current:
         yield format(current.get_span_context().trace_id, "032x")
 

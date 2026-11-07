@@ -1,20 +1,23 @@
 """One user question from start to finish: permissions, pipeline, and all the SQL records it leaves."""
 
+import json
 import logging
 import re
 import time
+from contextlib import contextmanager
 
 from django.db import transaction
 
 from apps.chatbot.models import ChatMessage, ChatSession, LLMRun
 from apps.chatbot.services import answer_cache, generation, routing
-from apps.chatbot.services.rag_workflow import RagOutcome, run_rag, stream_rag
+from apps.chatbot.services.rag_workflow import RagOutcome, for_traces, run_rag, stream_rag
 from apps.common import deadline
 from apps.common.exceptions import ServiceUnavailable
 from apps.common.middleware import current_request_id
 from apps.monitoring.models import CostRecord, PerformanceLog, TokenUsage
 from apps.monitoring.services import metrics
 from apps.monitoring.services.cost_tracker import compute_cost
+from apps.monitoring.services.tracing import span
 from apps.retrieval.models import RagConfig, RetrievalLog
 from apps.security.models import AuditLog
 from apps.security.services import guardrails
@@ -59,6 +62,41 @@ def _complete_sentences(text: str) -> tuple[str, str]:
     return (text[: ends[-1]], text[ends[-1] :]) if ends else ("", text)
 
 
+@contextmanager
+def _chat_trace(user, session: ChatSession, question: str):
+    """The root of a chat answer's trace in Langfuse: named "chat", grouped by conversation and user, with the
+    question as its input. Every answer gets one, also those read from the documents by rule or from the cache, which
+    make no model call. The search and model spans are its children."""
+    attributes = {
+        "langfuse.trace.name": "chat",
+        "langfuse.internal.as_root": True,
+        "session.id": str(session.id),
+        "user.id": user.get_username(),
+        "langfuse.observation.input": json.dumps(for_traces(question)),
+    }
+    with span("chat.answer", **attributes) as current:
+        yield current
+
+
+def _trace_outcome(current, outcome: RagOutcome, config: RagConfig) -> None:
+    current.set_attribute("langfuse.observation.output", json.dumps(outcome.answer))
+    details = {
+        "route": outcome.route,
+        "cached": outcome.cached,
+        "quoted": outcome.quoted,
+        "declined": outcome.abstained,
+        "blocked": outcome.blocked,
+        "model": outcome.model,
+        "config": config.name,
+        "format": outcome.answer_format,
+        "total_ms": round(outcome.total_ms),
+        "checks": sorted(outcome.checks),
+        "chunk_ids": [chunk.chunk_id for chunk in outcome.chunks],
+    }
+    for key, value in details.items():
+        current.set_attribute(f"langfuse.observation.metadata.{key}", json.dumps(value))
+
+
 def _from_cache(question: str, config: RagConfig, allowed: list[int], context: dict, fresh: bool, started: float):
     """A cached answer to this exact question, or None. A follow-up depends on the conversation before it, so it is
     never served from the cache, nor kept in it."""
@@ -84,35 +122,37 @@ def ask_streaming(user, question: str, config: RagConfig, session: ChatSession |
     started = time.perf_counter()
     message, context = _begin(user, question, config, session)
     allowed = allowed_document_ids(user)
-    if outcome := _from_cache(question, config, allowed, context, fresh, started):
-        yield "text", outcome.answer
-    else:
-        pending, stopped, first_text_ms = "", False, 0.0
-        try:
-            with deadline.within(env.REQUEST_DEADLINE_SECONDS):
-                for kind, value in stream_rag(question, config, allowed, **context, interactive=True):
-                    if kind == "outcome":
-                        outcome = value
-                        continue
-                    if kind == "reset":
-                        # The answer is being written again; what was sent so far will be replaced.
-                        pending = ""
-                        if not stopped:
-                            yield "reset", ""
-                        continue
-                    ready, pending = _complete_sentences(pending + value)
-                    if ready and not stopped:
-                        verdict = guardrails.check_output(ready)
-                        stopped = verdict.blocked
-                        if not stopped:
-                            first_text_ms = first_text_ms or (time.perf_counter() - started) * 1000
-                            yield "text", verdict.text
-        except ServiceUnavailable:
-            PerformanceLog.objects.create(message=message, succeeded=False)
-            raise
-        # Nothing streamed (a quoted table, a decline): the first words came with the whole answer.
-        outcome.first_token_ms = first_text_ms or outcome.total_ms
-        _keep(question, config, allowed, context, outcome)
+    with _chat_trace(user, message.session, question) as trace:
+        if outcome := _from_cache(question, config, allowed, context, fresh, started):
+            yield "text", outcome.answer
+        else:
+            pending, stopped, first_text_ms = "", False, 0.0
+            try:
+                with deadline.within(env.REQUEST_DEADLINE_SECONDS):
+                    for kind, value in stream_rag(question, config, allowed, **context, interactive=True):
+                        if kind == "outcome":
+                            outcome = value
+                            continue
+                        if kind == "reset":
+                            # The answer is being written again; what was sent so far will be replaced.
+                            pending = ""
+                            if not stopped:
+                                yield "reset", ""
+                            continue
+                        ready, pending = _complete_sentences(pending + value)
+                        if ready and not stopped:
+                            verdict = guardrails.check_output(ready)
+                            stopped = verdict.blocked
+                            if not stopped:
+                                first_text_ms = first_text_ms or (time.perf_counter() - started) * 1000
+                                yield "text", verdict.text
+            except ServiceUnavailable:
+                PerformanceLog.objects.create(message=message, succeeded=False)
+                raise
+            # Nothing streamed (a quoted table, a decline): the first words came with the whole answer.
+            outcome.first_token_ms = first_text_ms or outcome.total_ms
+            _keep(question, config, allowed, context, outcome)
+        _trace_outcome(trace, outcome, config)
     with transaction.atomic():
         _persist(message, outcome, config, user)
     yield "done", (message, outcome)
@@ -124,16 +164,18 @@ def ask(
     started = time.perf_counter()
     message, context = _begin(user, question, config, session)
     allowed = allowed_document_ids(user)
-    outcome = _from_cache(question, config, allowed, context, fresh, started)
-    if outcome is None:
-        try:
-            with deadline.within(env.REQUEST_DEADLINE_SECONDS):
-                outcome = run_rag(question, config, allowed, **context, interactive=True)
-        except ServiceUnavailable:
-            # Failed requests still count: they are what the error-rate metric measures.
-            PerformanceLog.objects.create(message=message, succeeded=False)
-            raise
-        _keep(question, config, allowed, context, outcome)
+    with _chat_trace(user, message.session, question) as trace:
+        outcome = _from_cache(question, config, allowed, context, fresh, started)
+        if outcome is None:
+            try:
+                with deadline.within(env.REQUEST_DEADLINE_SECONDS):
+                    outcome = run_rag(question, config, allowed, **context, interactive=True)
+            except ServiceUnavailable:
+                # Failed requests still count: they are what the error-rate metric measures.
+                PerformanceLog.objects.create(message=message, succeeded=False)
+                raise
+            _keep(question, config, allowed, context, outcome)
+        _trace_outcome(trace, outcome, config)
     with transaction.atomic():
         _persist(message, outcome, config, user)
     return message, outcome

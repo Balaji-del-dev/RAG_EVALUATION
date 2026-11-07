@@ -204,10 +204,11 @@ def test_only_question_traffic_is_sent_to_langfuse():
     keep = tracing.QuestionsOnly(inner)
     poll = SimpleNamespace(name="http.request", attributes={"http.target": "/api/rag/sessions/"})
     chat = SimpleNamespace(name="http.request", attributes={"http.target": "/api/rag/query/stream/"})
+    answer = SimpleNamespace(name="chat.answer", attributes={})
     stage = SimpleNamespace(name="retrieval.bm25", attributes={})
-    for item in (poll, chat, stage):
+    for item in (poll, chat, answer, stage):
         keep.on_end(item)
-    assert passed == [chat, stage]  # the dashboard's polling is dropped; questions and their stages are kept
+    assert passed == [answer, stage]  # request spans stay out; each answer and its stages go in
 
 
 def test_a_model_call_is_marked_as_a_generation_without_its_prompt():

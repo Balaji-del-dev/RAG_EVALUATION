@@ -476,7 +476,8 @@ def stream_rag(
     yield "outcome", _outcome(question, config, state, started)
 
 
-def _for_traces(text: str) -> str:
+def for_traces(text: str) -> str:
+    """Text with personal details and secrets masked, for sending to a tracing service."""
     return pii_detector.mask(text, pii_detector.detect_pii(text) + pii_detector.detect_secrets(text))
 
 
@@ -514,21 +515,22 @@ def _outcome(question: str, config: RagConfig, state: RagState, started: float) 
         route=_route_of(state),
     )
     outcome.first_token_ms = outcome.total_ms
-    if rewrite:
+    # The chat traces its question and answer itself (chat_service._chat_trace); evaluation runs are traced here.
+    if rewrite and not state.get("interactive"):
         record_generation(
             name="rag-rewrite",
             model=rewrite.model,
-            question=_for_traces(question),
+            question=for_traces(question),
             answer=standalone,
             prompt_tokens=rewrite.prompt_tokens,
             completion_tokens=rewrite.completion_tokens,
             metadata={"config": config.name},
         )
-    if llm:
+    if llm and not state.get("interactive"):
         record_generation(
             name="rag-answer",
             model=llm.model,
-            question=_for_traces(question),
+            question=for_traces(question),
             answer=outcome.answer,
             prompt_tokens=llm.prompt_tokens,
             completion_tokens=llm.completion_tokens,
