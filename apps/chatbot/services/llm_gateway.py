@@ -7,8 +7,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
+from django.core.cache import cache
 
 from apps.common.exceptions import ServiceUnavailable
+from apps.monitoring.services import metrics
 from apps.monitoring.services.tracing import span
 from config.env import env, split_csv
 
@@ -41,6 +43,38 @@ def model_digest(model: str) -> str:
     return next((tag.get("digest", "") for tag in tags if tag.get("name") == name), "")
 
 
+# A failing model is retried twice, after 1 s and 3 s. Three failures in a row pause calls to it for 30 s, so a down
+# Ollama gives a quick, clear error instead of every question waiting out its own timeouts.
+RETRY_DELAYS = (1.0, 3.0)
+FAILURES_TO_OPEN = 3
+OPEN_SECONDS = 30
+
+
+def _breaker(model: str) -> str:
+    return f"llm-breaker:{model}"
+
+
+def _record_failure(model: str) -> None:
+    failures = (cache.get(_breaker(model)) or 0) + 1
+    cache.set(_breaker(model), failures, OPEN_SECONDS * 4)
+    if failures >= FAILURES_TO_OPEN:
+        cache.set(_breaker(model) + ":open", True, OPEN_SECONDS)
+        cache.delete(_breaker(model))
+
+
+def _is_timeout(exc: Exception) -> bool:
+    return "timeout" in type(exc).__name__.lower() or "timed out" in str(exc).lower()
+
+
+# Ollama stops a model that repeats the same token too long. It is the model's failure, not the service's, so it is
+# told apart: the answer can be asked for again, where a service failure cannot.
+REPEAT_ABORT = "token repeat limit reached"
+
+
+class RepetitionAborted(ServiceUnavailable):
+    pass
+
+
 @dataclass
 class LLMResponse:
     text: str
@@ -48,6 +82,7 @@ class LLMResponse:
     prompt_tokens: int
     completion_tokens: int
     latency_ms: float
+    first_token_ms: float = 0.0  # when streamed: how long until the first text arrived
 
 
 def complete(
@@ -80,25 +115,51 @@ def complete(
         temperature=temperature,
         max_tokens=max_tokens,
         timeout=env.LLM_TIMEOUT_SECONDS,
-        num_retries=1,
+        num_retries=0,  # retried here, with backoff, so that failures can open the circuit breaker
         **kwargs,
     )
+    if cache.get(_breaker(model) + ":open"):
+        metrics.record_llm_problem("circuit_open")
+        raise ServiceUnavailable(
+            f"{model} failed {FAILURES_TO_OPEN} times in a row, so calls to it pause for {OPEN_SECONDS} seconds. "
+            "Try again shortly."
+        )
     started = time.perf_counter()
-    try:
+    first_token: list[float] = []
+
+    def call():
         with span("llm.complete", model=model, streamed=on_token is not None):
             if on_token is None:
-                response = litellm.completion(**request)
-            else:
-                parts = []
-                for part in litellm.completion(**request, stream=True):
-                    parts.append(part)
-                    text = part.choices[0].delta.content if part.choices else None
-                    if text:
-                        on_token(text)
-                # Puts the pieces back together, with token usage, as if it had not been streamed.
-                response = litellm.stream_chunk_builder(parts, messages=messages)
-    except Exception as exc:  # LiteLLM wraps provider errors in many exception types
-        raise ServiceUnavailable(f"LLM call to {model} failed: {exc}") from exc
+                return litellm.completion(**request)
+            parts = []
+            for part in litellm.completion(**request, stream=True):
+                parts.append(part)
+                text = part.choices[0].delta.content if part.choices else None
+                if text:
+                    if not first_token:
+                        first_token.append((time.perf_counter() - started) * 1000)
+                    on_token(text)
+            # Puts the pieces back together, with token usage, as if it had not been streamed.
+            return litellm.stream_chunk_builder(parts, messages=messages)
+
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            response = call()
+            break
+        except Exception as exc:  # LiteLLM wraps provider errors in many exception types
+            if REPEAT_ABORT in str(exc):
+                metrics.record_llm_problem("repetition")
+                raise RepetitionAborted(f"{model} kept repeating itself and Ollama stopped it") from exc
+            # A timeout already waited long; text already shown cannot be taken back. Neither is retried.
+            if attempt < len(RETRY_DELAYS) and not first_token and not _is_timeout(exc):
+                logger.info("LLM call to %s failed, retrying in %ss: %s", model, RETRY_DELAYS[attempt], exc)
+                metrics.record_llm_problem("retry")
+                time.sleep(RETRY_DELAYS[attempt])
+                continue
+            _record_failure(model)
+            metrics.record_llm_problem("failed")
+            raise ServiceUnavailable(f"LLM call to {model} failed: {exc}") from exc
+    cache.delete(_breaker(model))
 
     usage = response.usage
     return LLMResponse(
@@ -107,4 +168,5 @@ def complete(
         prompt_tokens=usage.prompt_tokens or 0,
         completion_tokens=usage.completion_tokens or 0,
         latency_ms=(time.perf_counter() - started) * 1000,
+        first_token_ms=first_token[0] if first_token else 0.0,
     )

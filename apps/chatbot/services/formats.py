@@ -25,7 +25,12 @@ MERMAID_NOTE = (
     "Draw it as a Mermaid diagram in a ```mermaid code block. Keep node ids to single words and put labels in quotes. "
     "Below the block, write one line naming the sources used, like [S1]."
 )
-TABLE_NOTE = "Put the source, like [S1], in the last column. Do not put the table in a code block."
+# Asked for a table, the model once wrote it all on one line and then repeated "| |" until Ollama stopped it. Rows on
+# their own lines, short cells and a numbered first column keep it on track, and number the rows in order.
+TABLE_NOTE = (
+    "Put each row on its own line and keep each cell short. Number the rows in a first column #, in the order the "
+    "sources give them. Put the source, like [S1], in the last column. Do not put the table in a code block."
+)
 CONVERTED_NOTE = "Write the answer as one Markdown table with a header row, or as a bullet list if it is not tabular."
 DOCUMENT_NOTE = (
     "Write it as a document: a title heading, then short sections with ## headings, lists and tables where they help. "
@@ -1268,6 +1273,7 @@ MERMAID_START_RE = re.compile(
     re.MULTILINE,
 )
 NUMBER_RE = re.compile(r"-?\d[\d,]*(?:\.\d+)?")
+VALUE_START_RE = re.compile(r"^\s*(?:rs\.?|inr|₹|\$|€|£)?\s*-?\d", re.IGNORECASE)
 MAX_NODES = 30
 
 
@@ -1302,6 +1308,14 @@ def _number(cell: str) -> float | None:
     return float(match.group().replace(",", "")) if match else None
 
 
+def _value(cell: str) -> float | None:
+    """A cell's number, if the cell is a value ("18", "6 days", "Rs. 57,559.00") rather than a label with a number in
+    it: "Feb 2026" is a label, and reading 2026 as its value left a salary chart with nothing to draw."""
+    if not VALUE_START_RE.match(CITATION_RE.sub("", cell)):
+        return None
+    return _number(cell)
+
+
 def _number_text(value: float) -> str:
     return str(int(value)) if value == int(value) else f"{value:g}"
 
@@ -1315,8 +1329,8 @@ def _labelled_numbers(text: str) -> tuple[str, list[tuple[str, float]]]:
     pairs = []
     unit = ""
     for row in rows:
-        numbers = [(index, _number(cell)) for index, cell in enumerate(row) if _number(cell) is not None]
-        texts = [cell for cell in row if _number(cell) is None and _plain(cell)]
+        numbers = [(index, _value(cell)) for index, cell in enumerate(row) if _value(cell) is not None]
+        texts = [cell for cell in row if _value(cell) is None and _plain(cell)]
         if numbers and texts:
             index, value = numbers[0]
             unit = unit or (header[index] if index < len(header) else "")
@@ -1436,7 +1450,32 @@ BUILDERS = {
 
 
 TITLE_FILLER = frozenset(
-    ["a", "an", "and", "as", "at", "create", "display", "draw", "for", "generate", "give", "in", "is", "list", "make", "me", "of", "on", "please", "pls", "show", "the", "to", "what"]
+    [
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "create",
+        "display",
+        "draw",
+        "for",
+        "generate",
+        "give",
+        "in",
+        "is",
+        "list",
+        "make",
+        "me",
+        "of",
+        "on",
+        "please",
+        "pls",
+        "show",
+        "the",
+        "to",
+        "what",
+    ]
 )
 
 
@@ -1447,6 +1486,18 @@ def diagram_title(question: str) -> str:
         words.pop(0)
     title = " ".join(words) or "Answer"
     return title[:1].upper() + title[1:]
+
+
+def lay_out(text: str, layout: str, question: str = "") -> str:
+    """Finished Markdown in the layout asked for, where that layout is built by rule (data formats and diagrams)."""
+    fmt = BY_KEY.get(layout)
+    if fmt and fmt.render == "data":
+        return convert(text, fmt.target)
+    if fmt and fmt.render == "drawn":
+        return draw(text, fmt.target, title=question)
+    if fmt and fmt.render == "mermaid":
+        return fence_mermaid(text)
+    return text
 
 
 def draw(text: str, kind: str, title: str = "") -> str:

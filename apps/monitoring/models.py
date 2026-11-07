@@ -9,6 +9,9 @@ class PerformanceLog(models.Model):
     retrieval_ms = models.FloatField(default=0)
     generation_ms = models.FloatField(default=0)
     total_ms = models.FloatField(default=0)
+    # Time until the first words of the answer were on screen.
+    first_token_ms = models.FloatField(default=0)
+    tokens_per_second = models.FloatField(default=0)
     succeeded = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 

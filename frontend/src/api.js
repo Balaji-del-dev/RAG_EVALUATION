@@ -41,12 +41,18 @@ export async function api(path, { method = 'GET', body, form } = {}) {
   if (response.status === 204) return null
   const isJson = response.headers.get('content-type')?.includes('json')
   const data = isJson ? await response.json() : null
-  if (!response.ok) throw new ApiError(errorMessage(data, response.status), response.status)
+  if (!response.ok) {
+    // A session that has ended: the whole app goes back to the sign-in screen, rather than each panel failing.
+    if ((response.status === 401 || response.status === 403) && /credentials were not provided/i.test(data?.detail ?? '')) {
+      window.dispatchEvent(new Event('bench:session-ended'))
+    }
+    throw new ApiError(errorMessage(data, response.status), response.status)
+  }
   return data
 }
 
 /** POST, then read the server-sent events in the response, calling onEvent(name, data) for each. */
-export async function streamApi(path, body, onEvent) {
+export async function streamApi(path, body, onEvent, { signal } = {}) {
   let response
   try {
     response = await fetch(`/api/${path}`, {
@@ -54,8 +60,10 @@ export async function streamApi(path, body, onEvent) {
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken(), Accept: 'text/event-stream' },
       body: JSON.stringify(body),
+      signal,
     })
-  } catch {
+  } catch (failure) {
+    if (failure.name === 'AbortError') throw failure
     throw new ApiError('Could not reach the server. Check that it is running.', 0)
   }
   if (!response.ok) {

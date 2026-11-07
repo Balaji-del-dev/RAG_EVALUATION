@@ -8,8 +8,11 @@ router.register("sessions", views.ChatSessionViewSet, basename="chat-session")
 
 urlpatterns = [
     path("query/", views.QueryView.as_view()),
+    path("models/", views.LocalModelsView.as_view()),
     path("query/stream/", views.QueryStreamView.as_view()),
     path("messages/<int:message_id>/feedback/", views.FeedbackView.as_view()),
     path("messages/<int:message_id>/download/<str:extension>/", views.DownloadView.as_view()),
+    path("review/", views.ReviewView.as_view()),
+    path("review/dataset/", views.ReviewDatasetView.as_view()),
     *router.urls,
 ]

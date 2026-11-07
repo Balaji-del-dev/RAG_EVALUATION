@@ -530,7 +530,7 @@ def test_the_workflow_streams_tokens_then_the_outcome(monkeypatch):
 
     monkeypatch.setattr(generation.llm_gateway, "complete", complete)
     monkeypatch.setattr(
-        rag_workflow, "retrieve", lambda *args: RetrievalResult(chunks=[_chunk("Sick leave is 12 days.")])
+        rag_workflow, "retrieve", lambda *args, **kwargs: RetrievalResult(chunks=[_chunk("Sick leave is 12 days.")])
     )
     config = SimpleNamespace(
         name="c", index_key="k", llm_model="fake", prompt_version="v3", temperature=0.0, max_tokens=10
@@ -646,7 +646,7 @@ def _run_follow_up(monkeypatch, question, reply):
 
     fake, searched = FakeLLM(reply), []
     monkeypatch.setattr(generation.llm_gateway, "complete", fake.complete)
-    monkeypatch.setattr(rag_workflow, "retrieve", lambda query, *_: searched.append(query) or RetrievalResult())
+    monkeypatch.setattr(rag_workflow, "retrieve", lambda query, *_, **__: searched.append(query) or RetrievalResult())
     config = SimpleNamespace(
         name="c", index_key="k", llm_model="fake", prompt_version="v2", temperature=0.0, max_tokens=10
     )

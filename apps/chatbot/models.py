@@ -28,6 +28,9 @@ class ChatMessage(TimeStampedModel):
     block_reason = models.CharField(max_length=255, blank=True)
     guard_findings = models.JSONField(default=dict, blank=True)
     request_id = models.CharField(max_length=64, blank=True, db_index=True)
+    # What the reader should double-check: figures not in the sources, citations to sources it was not given.
+    checks = models.JSONField(default=dict, blank=True)
+    cached = models.BooleanField(default=False, help_text="Answered from the answer cache")
 
     class Meta:
         db_table = "chat_messages"

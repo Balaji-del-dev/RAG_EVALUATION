@@ -2430,6 +2430,53 @@ a.tile:active {
   white-space: nowrap;
 }
 
+.config-info {
+  position: relative;
+}
+
+.config-panel {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + var(--s-1));
+  right: 0;
+  width: min(380px, 90vw);
+  padding: var(--s-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+}
+
+.config-panel h2 {
+  margin-bottom: var(--s-1);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.config-panel dl {
+  display: grid;
+  gap: var(--s-half);
+  margin: 0 0 var(--s-1);
+}
+
+.config-panel dl > div {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: var(--s-1);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.config-panel dt {
+  color: var(--text-2);
+}
+
+.config-panel dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .chat-config select {
   max-width: 240px;
   height: 32px;
@@ -2614,6 +2661,22 @@ a.tile:active {
   letter-spacing: 0.02em;
 }
 
+.answer-checks {
+  margin-top: var(--s-1);
+  padding: var(--s-1) var(--s-2);
+  border: 1px solid var(--warning-text);
+  border-radius: var(--radius-control);
+  background: var(--warning-soft);
+  color: var(--warning-text);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.answer-checks ul {
+  margin: var(--s-half) 0 0;
+  padding-left: var(--s-2);
+}
+
 .decline-reason {
   margin-top: var(--s-1);
 }
@@ -2777,6 +2840,234 @@ a.tile:active {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: var(--s-1);
+}
+
+/* ---------- Message box toolbar ---------- */
+
+.composer-box {
+  border-radius: 24px;
+}
+
+.composer-box textarea,
+.composer-box textarea:hover,
+.composer-box textarea:focus {
+  min-height: 48px;
+  padding: var(--s-1) var(--s-1) var(--s-half);
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.composer-side {
+  display: flex;
+  align-items: center;
+  gap: var(--s-half);
+  min-width: 0;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  height: 32px;
+  padding: 0 var(--s-1) 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-2);
+  font: 500 12px/16px var(--body);
+  cursor: pointer;
+  transition:
+    background var(--ease),
+    color var(--ease),
+    border-color var(--ease);
+}
+
+.pill:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.pill[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.pill-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-pill {
+  position: relative;
+  min-width: 0;
+}
+
+.menu-popover {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + var(--s-1));
+  width: min(340px, 90vw);
+  max-height: 60vh;
+  padding: var(--s-half);
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-lg);
+  animation: page-in var(--ease);
+}
+
+.menu-left {
+  left: 0;
+}
+
+.menu-right {
+  right: 0;
+}
+
+.menu-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  outline: none;
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  padding: var(--s-1);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.menu-item-active {
+  background: var(--surface-3);
+}
+
+.menu-list:focus-visible .menu-item-active {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.menu-item-disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.menu-item-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.menu-item-title {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.menu-item-detail {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.menu-check {
+  flex: none;
+  color: var(--accent);
+}
+
+.menu-footer {
+  margin-top: var(--s-half);
+  padding: var(--s-1);
+  border-top: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.menu-popover .config-panel {
+  position: static;
+  width: auto;
+  margin-top: var(--s-half);
+  padding: var(--s-1);
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.menu-popover .config-panel .menu-footer {
+  padding: var(--s-1) 0 0;
+}
+
+.composer-stop {
+  background: var(--text);
+  color: var(--surface);
+}
+
+.composer-stop:hover:not(:disabled) {
+  background: var(--text-2);
+}
+
+.composer-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-half);
+  min-width: 0;
+}
+
+/* Quiet selects, like the "Search only" button beside them, so that the message stays the main thing. */
+.composer-select select,
+.composer-select select:hover {
+  max-width: 220px;
+  height: 32px;
+  padding: 0 var(--s-4) 0 var(--s-1);
+  border: 0;
+  border-radius: var(--radius-control);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--text-2);
+  font: 500 12px/16px var(--body);
+  cursor: pointer;
+}
+
+.composer-select select:hover {
+  background-color: var(--surface-3);
+  color: var(--text);
+}
+
+.composer-select select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* In the message box the panel opens upwards, anchored to the box, so it never runs off a narrow screen. */
+.composer-box {
+  position: relative;
+}
+
+.composer-tools .config-info {
+  position: static;
+}
+
+.composer-tools .config-panel {
+  top: auto;
+  right: auto;
+  bottom: calc(100% + var(--s-1));
+  left: 0;
+  width: min(400px, 100%);
 }
 
 .composer-search {
@@ -3960,8 +4251,23 @@ input[type='checkbox'] {
     padding: 0 var(--s-1);
   }
 
-  .chat-config select {
-    max-width: 136px;
+  .chat-settings .pill {
+    max-width: 132px;
+  }
+
+  /* On a phone the menus take the message box's width, so neither runs off the screen. */
+  .composer-tools .menu-pill {
+    position: static;
+  }
+
+  .composer-tools .menu-popover {
+    right: 0;
+    left: 0;
+    width: auto;
+  }
+
+  .chat-model .pill {
+    max-width: 120px;
   }
 
   .chat-scroll {
@@ -4010,4 +4316,228 @@ input[type='checkbox'] {
     forced-color-adjust: none;
     background: CanvasText;
   }
+}
+
+/* A text action inside a sentence, such as "Answer again" under a cached answer. */
+.link-button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.link-button:hover {
+  text-decoration-thickness: 2px;
+}
+.link-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Space above a sub-heading that follows stats or a table inside a panel. */
+.stat-row + .details-title,
+.table-wrap + .details-title {
+  margin-top: 20px;
+}
+
+/* "What was wrong?" after a thumbs-down. */
+.why-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 12px 14px;
+  max-width: 560px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.why-form fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+.why-form legend {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.why-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.why-chip {
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-control);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.why-chip:hover {
+  border-color: var(--border-hover);
+}
+.why-chip[aria-pressed='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+.why-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.why-form textarea {
+  height: auto;
+  min-height: 64px;
+  resize: vertical;
+}
+.why-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Review: chat answers to look at again, and test cases made from them. */
+.review-tabs {
+  margin-bottom: var(--s-2);
+}
+.tab-count {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.review-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.review-item {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.review-item-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.review-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+.review-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.review-select input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+}
+.review-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.review-when {
+  margin-left: auto;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.review-question {
+  margin: 0;
+  font-weight: 600;
+}
+.review-comment {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border-hover);
+  color: var(--text-2);
+  font-size: 14px;
+}
+.review-answer summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.review-answer[open] summary {
+  margin-bottom: 6px;
+}
+.review-checks {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.review-case {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.review-case textarea {
+  height: auto;
+  min-height: 80px;
+  resize: vertical;
+}
+.review-pages {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+.review-saved {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.review-bar {
+  position: sticky;
+  bottom: 12px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  margin-top: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-lg, 0 8px 24px rgb(15 23 42 / 0.12));
+}
+.review-bar .field {
+  flex: 1 1 220px;
+  margin: 0;
+}
+.review-bar-count {
+  align-self: center;
+  font-weight: 600;
+}
+.review-bar-hint {
+  color: var(--text-2);
+  font-weight: 400;
 }

@@ -113,6 +113,16 @@ waits on the network.
 
 Analysts can read text from restricted documents through evaluation results, because runs read the whole corpus.
 
+## Choosing the model
+
+The chat header has a model list, read from Ollama (`GET /api/rag/models/`). It shows each installed chat model with its
+size, and greys out any that would not fit in free memory, with the numbers. Embedding-only models such as all-minilm are
+not offered. The choice applies to that chat only; evaluation runs use their configuration's model. The info button
+beside it shows what the configuration does: model, prompt, search, reranking, chunks and embeddings.
+
+Free memory means MemAvailable plus what Ollama holds now, not swap. A model is estimated to need its file size plus a
+tenth, plus 0.4 GB for the context window. On this machine `qwen2.5:3b` needs about 2.5 GB, so close other apps first.
+
 ## Answer formats
 
 Ask for a layout in the question and the chat uses it: "as a comparison table", "as bullet points", "step by step",
@@ -155,8 +165,24 @@ chat uses it. Keep the answer from `done`: the checks after generation can still
 
 Prometheus can scrape `http://127.0.0.1:8010/metrics`, from this machine only: request counts and latencies from
 django-prometheus, plus `rag_answers_total` (answered, declined, quoted, blocked), `rag_answer_seconds`,
-`rag_llm_tokens_total` and `rag_feedback_total`. To try other models when the configured one fails, list them in
+`rag_first_token_seconds`, `rag_llm_tokens_per_second`, `rag_llm_tokens_total`, `rag_answer_cache_total` (hit, miss),
+`rag_guard_blocks_total`, `rag_llm_problems_total` (retry, failed, repetition, circuit_open) and
+`rag_feedback_total`. To try other models when the configured one fails, list them in
 `LLM_FALLBACK_MODELS` in `.env`, for example `ollama_chat/qwen2.5:3b` (about 2.3 GB of RAM) or a hosted model.
+
+A question asked again with the same documents, permissions, configuration and model is answered from the cache
+for an hour (`ANSWER_CACHE_SECONDS` in `.env`, 0 turns it off). Only clean answers are kept: not declines, not
+answers the checks flagged, not follow-ups. Uploading or changing a document or configuration empties it, and so does a
+deploy that changes the pipeline code. Send `"fresh": true` to skip it; the chat's "Answer again" link does.
+
+`GET /api/monitoring/slo/?days=7` reports the live-chat objectives and whether the period met them: answer time and
+time to the first words (95th percentile), failed requests, and the model's writing speed. Set the targets with the
+`SLO_*` values in `.env`. The Performance page shows the same table.
+
+Analysts and admins have a **Review** page: chat answers from the last 30 days rated thumbs-down (with the reason
+given), flagged by the checks, declined, or failed. Select some, write the correct answer, and save them as a new
+version of a dataset to test the next change against. It shows the questions, not who asked them. API:
+`GET /api/rag/review/?kind=thumbs_down|flagged|declined|failed` and `POST /api/rag/review/dataset/`.
 
 Unlock an account early with `python manage.py axes_reset_username <name>`. Every response has an
 `X-Request-ID` header. The same ID is in the server log lines, the trace spans and the saved answer, and the chat

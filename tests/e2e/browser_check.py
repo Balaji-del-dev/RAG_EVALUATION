@@ -195,7 +195,8 @@ with sync_playwright() as p:
     check("History search filters the list", page.locator(".history-row").count() == 0)
     page.fill(".history-search input", "")
     page.fill(".composer-box textarea", "backups")
-    page.click("text=Search only")
+    page.click("button.pill[aria-pressed]")  # the Search mode
+    page.keyboard.press("Enter")
     page.wait_for_function(
         "document.querySelectorAll('.turn').length === 3 && !document.querySelector('.thinking')", timeout=60000
     )

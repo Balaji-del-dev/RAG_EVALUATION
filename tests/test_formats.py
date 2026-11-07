@@ -228,6 +228,13 @@ def test_a_diagram_is_drawn_by_rule_from_simple_markdown(kind, text, expected):
     assert drawn.endswith(text)  # the steps, list or table stay below, readable without the picture
 
 
+def test_a_label_with_a_year_in_it_is_still_a_label():
+    """Real table: the salary chart read "Feb 2026" as the number 2026 and drew nothing."""
+    salary = "| Document | Net pay | Source |\n|---|---|---|\n| Feb 2026 | 63,634.00 | [S1] |\n| Mar 2026 | 39,225.00 | [S2] |"
+    code = formats.draw(salary, "bar", "net pay of each month").split("```mermaid\n", 1)[1]
+    assert 'x-axis ["Feb 2026", "Mar 2026"]' in code and "bar [63634, 39225]" in code and 'y-axis "Net pay"' in code
+
+
 def test_without_the_structure_the_models_own_diagram_is_kept_and_fenced():
     """Real reply: a mind map without its ```mermaid fence showed as plain text."""
     assert (
@@ -250,3 +257,49 @@ def test_a_flowchart_request_asks_the_model_for_steps_not_mermaid():
     assert formats.BY_KEY["flowchart"].render == "drawn"
     assert "numbered list of short steps" in formats.BY_KEY["flowchart"].instruction
     assert formats.BY_KEY["sequence"].render == "mermaid"  # no simple Markdown maps onto a sequence diagram
+
+
+def _generate_with_abort(monkeypatch, layout, *replies):
+    """Like _generate, but a reply of None is Ollama stopping a model stuck in a loop."""
+    from apps.chatbot.services import llm_gateway
+
+    calls = []
+
+    def complete(messages, **kwargs):
+        calls.append(messages)
+        reply = replies[len(calls) - 1]
+        if reply is None:
+            raise llm_gateway.RepetitionAborted("qwen kept repeating itself and Ollama stopped it")
+        return LLMResponse(reply, "fake", 10, 5, 1.0)
+
+    monkeypatch.setattr(generation.llm_gateway, "complete", complete)
+    config = SimpleNamespace(prompt_version="v3", llm_model="fake", temperature=0.0, max_tokens=256)
+    chunk = RetrievedChunk(1, 1, "hr.docx", 1, "Earned leave is 18 days.", 1.0)
+    return generation.generate("hr policy", [chunk], config, layout=layout), calls
+
+
+def test_when_ollama_stops_a_looping_table_the_answer_is_asked_again_plainly(monkeypatch):
+    """The real failure: "prediction aborted, token repeat limit reached" was shown as an error."""
+    answer, calls = _generate_with_abort(monkeypatch, "table", None, "Earned leave is 18 days [S1].")
+    assert answer.text == "Earned leave is 18 days [S1]." and not answer.abstained
+    assert "Format:" in calls[0][1]["content"] and "Format:" not in calls[1][1]["content"]
+
+
+def test_when_the_plain_retry_loops_too_the_answer_is_withheld_not_an_error(monkeypatch):
+    answer, _ = _generate_with_abort(monkeypatch, "table", None, None)
+    assert answer.abstained and answer.degenerate
+
+
+def test_ollamas_repeat_abort_is_told_apart_from_a_service_failure(monkeypatch):
+    import litellm
+
+    from apps.chatbot.services import llm_gateway
+
+    def fail(**kwargs):
+        raise RuntimeError(
+            "Got unexpected response from Ollama: {'error': 'prediction aborted, token repeat limit reached'}"
+        )
+
+    monkeypatch.setattr(litellm, "completion", fail)
+    with pytest.raises(llm_gateway.RepetitionAborted):
+        llm_gateway.complete([{"role": "user", "content": "x"}], model="ollama_chat/qwen2.5:1.5b")

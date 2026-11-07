@@ -1,9 +1,14 @@
 """The retrieval pipeline: BM25 + vector -> RRF -> permission re-check -> rerank -> MMR -> top K."""
 
+import contextvars
+import copy
+import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from apps.common.exceptions import ServiceUnavailable
 from apps.documents.models import DocumentChunk
 from apps.documents.services import embeddings
 from apps.monitoring.services.tracing import span
@@ -28,6 +33,8 @@ class RetrievalResult:
     timings_ms: dict = field(default_factory=dict)
     # True when the reranker judged even the best chunk irrelevant to the question.
     below_relevance_floor: bool = False
+    # What happened that the reader should know: a fallback, a widened search.
+    notes: list[str] = field(default_factory=list)
 
     @property
     def chunk_ids(self) -> list[int]:
@@ -115,11 +122,67 @@ def text_with_tables(row: DocumentChunk, index_key: str) -> str:
     return pair_table_values(text)
 
 
+logger = logging.getLogger(__name__)
+# A cross-encoder score below this means even the best match is weak. Good matches here score 3 to 10.
+WEAK_MATCH = 0.0
+RETRY_DELAY_SECONDS = 0.5
+
+
 def _timed(result: RetrievalResult, stage: str, started: float) -> None:
     result.timings_ms[stage] = round((time.perf_counter() - started) * 1000, 2)
 
 
-def retrieve(query: str, config: RagConfig, allowed_document_ids: list[int]) -> RetrievalResult:
+def retrieve(
+    query: str, config: RagConfig, allowed_document_ids: list[int], widen_if_weak: bool = False
+) -> RetrievalResult:
+    """The best chunks the caller may read. With widen_if_weak (the chat sets it; evaluation runs do not, so their
+    scores stay comparable), a search whose best match scores below WEAK_MATCH runs again with twice the candidates,
+    and the better of the two is kept."""
+    result = _retrieve_once(query, config, allowed_document_ids)
+    best = _best_score(result)
+    if not widen_if_weak or best is None or best >= WEAK_MATCH:
+        return result
+    wider = copy.copy(config)
+    wider.candidate_k, wider.rerank_top_n = config.candidate_k * 2, config.rerank_top_n * 2
+    second = _retrieve_once(query, wider, allowed_document_ids)
+    if (_best_score(second) or best) > best:
+        second.notes.append(f"The best match was weak, so the search was widened to {wider.candidate_k} candidates.")
+        return second
+    return result
+
+
+def _best_score(result: "RetrievalResult") -> float | None:
+    ranked = result.stages.get("rerank") or []
+    return ranked[0]["score"] if ranked else None
+
+
+def _with_one_retry(search):
+    """Search indexes can drop a connection now and then; one quick retry covers that."""
+    try:
+        return search()
+    except ServiceUnavailable:
+        time.sleep(RETRY_DELAY_SECONDS)
+        return search()
+
+
+# Two threads: one search at a time per web worker thread is the normal load, and embedding is CPU-bound anyway.
+_VECTOR_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vector-search")
+
+
+def _vector_hits(query: str, config: RagConfig, allowed: list[int]):
+    """The query's embedding, its vector-search hits, and how long each step took."""
+    timings = {}
+    started = time.perf_counter()
+    with span("retrieval.embed"):
+        query_vector = embeddings.embed_query(query, config.embedding_model)
+    timings["embed"] = round((time.perf_counter() - started) * 1000, 2)
+    with span("retrieval.vector"):
+        hits = _with_one_retry(lambda: vector_search.search(config, query_vector, config.candidate_k, allowed))
+    timings["vector"] = round((time.perf_counter() - started) * 1000, 2)
+    return query_vector, hits, timings
+
+
+def _retrieve_once(query: str, config: RagConfig, allowed_document_ids: list[int]) -> "RetrievalResult":
     """Return the best chunks that the caller may read.
 
     `allowed_document_ids` has no default on purpose: a caller must state its permissions. They are
@@ -133,22 +196,53 @@ def retrieve(query: str, config: RagConfig, allowed_document_ids: list[int]) -> 
 
     ranked_lists = []
     query_vector = None
-    if config.retrieval_mode in (RagConfig.Mode.VECTOR, RagConfig.Mode.HYBRID):
+    hybrid = config.retrieval_mode == RagConfig.Mode.HYBRID
+    use_vector = config.retrieval_mode in (RagConfig.Mode.VECTOR, RagConfig.Mode.HYBRID)
+    use_bm25 = config.retrieval_mode in (RagConfig.Mode.BM25, RagConfig.Mode.HYBRID)
+
+    # In a hybrid search the two engines run at the same time: the embedding and Qdrant call in a worker thread,
+    # the keyword search here. The keyword search stays in this thread because it may read the database, and a
+    # thread would open a connection of its own that nothing closes.
+    vector_job = None
+    if use_vector:
+        context = contextvars.copy_context()  # keeps the request ID and trace parent in the worker's spans
+        vector_job = _VECTOR_POOL.submit(context.run, _vector_hits, query, config, sorted(allowed))
+
+    bm25_hits, bm25_error = [], None
+    if use_bm25:
         started = time.perf_counter()
-        with span("retrieval.vector"):
-            query_vector = embeddings.embed_query(query, config.embedding_model)
-            hits = vector_search.search(config, query_vector, config.candidate_k, sorted(allowed))
-        _timed(result, "vector", started)
+        try:
+            with span("retrieval.bm25"):
+                bm25_hits = _with_one_retry(
+                    lambda: bm25_search.backend().search(config, query, config.candidate_k, sorted(allowed))
+                )
+        except ServiceUnavailable as exc:
+            bm25_error = exc
+        _timed(result, "bm25", started)
+
+    if vector_job is not None:
+        try:
+            query_vector, hits, timings = vector_job.result()
+            result.timings_ms.update(timings)
+        except ServiceUnavailable as exc:
+            # In a hybrid search, keywords alone still answer. A vector-only search has nothing to fall back to.
+            if not hybrid or bm25_error:
+                raise
+            logger.warning("Vector search failed, continuing with keywords only: %s", exc)
+            result.notes.append("The vector index did not answer, so this used keyword search only.")
+            hits = []
+        # Listed first, as before, so that fusion breaks ties the same way.
         ranked_lists.append([hit.chunk_id for hit in hits])
         result.stages["vector"] = [{"chunk_id": hit.chunk_id, "score": round(hit.score, 4)} for hit in hits]
 
-    if config.retrieval_mode in (RagConfig.Mode.BM25, RagConfig.Mode.HYBRID):
-        started = time.perf_counter()
-        with span("retrieval.bm25"):
-            hits = bm25_search.backend().search(config, query, config.candidate_k, sorted(allowed))
-        _timed(result, "bm25", started)
-        ranked_lists.append([hit.chunk_id for hit in hits])
-        result.stages["bm25"] = [{"chunk_id": hit.chunk_id, "score": round(hit.score, 4)} for hit in hits]
+    if use_bm25:
+        if bm25_error:
+            if not hybrid:
+                raise bm25_error  # nothing left to search with
+            logger.warning("Keyword search failed, continuing with vectors only: %s", bm25_error)
+            result.notes.append("The keyword index did not answer, so this used vector search only.")
+        ranked_lists.append([hit.chunk_id for hit in bm25_hits])
+        result.stages["bm25"] = [{"chunk_id": hit.chunk_id, "score": round(hit.score, 4)} for hit in bm25_hits]
 
     fused = rrf.reciprocal_rank_fusion(ranked_lists, config.rrf_k)
     result.stages["rrf"] = [{"chunk_id": chunk_id, "score": round(score, 5)} for chunk_id, score in fused]

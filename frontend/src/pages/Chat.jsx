@@ -10,6 +10,7 @@ import {
   PanelLeft,
   Plus,
   Search,
+  Square,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -18,6 +19,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, api, results, streamApi, useApi } from '../api.js'
 import { AnswerText, DownloadMenu, FormattedAnswer } from '../components/AnswerView.jsx'
+import { ConfigMenu, ModelMenu } from '../components/ModelPicker.jsx'
 import { ErrorNote, Status } from '../components/common.jsx'
 import { useToast } from '../components/toast.jsx'
 import { duration, score } from '../format.js'
@@ -52,6 +54,9 @@ function fromServer(message) {
     question: message.question,
     understoodAs: message.standalone_question,
     format: message.format ?? null,
+    tampered: message.findings?.sources ?? [],
+    checks: message.checks ?? {},
+    cached: Boolean(message.cached),
     answer: message.answer,
     abstained: message.abstained,
     declineReason: message.decline_reason,
@@ -159,6 +164,39 @@ function History({ open, activeId, onClose, onDeleted, sessions }) {
   )
 }
 
+/** What to double-check in an answer: figures in no source, citations to sources it was not given, sentences the
+ * sources do not support, and anything the search had to work around. */
+function AnswerChecks({ checks }) {
+  if (!checks || !Object.keys(checks).length) return null
+  const warnings = [
+    checks.numbers?.length && `These figures are not in the sources: ${checks.numbers.join(', ')}.`,
+    checks.missing_sources?.length && `It cites ${checks.missing_sources.join(', ')}, which it was not given.`,
+    checks.layout,
+    ...(checks.contradicted ?? []).map((sentence) => `The sources contradict: "${sentence}"`),
+    ...(checks.unsupported ?? []).map((sentence) => `Not supported by its sources: "${sentence}"`),
+  ].filter(Boolean)
+  const notes = checks.retrieval ?? []
+  return (
+    <>
+      {warnings.length > 0 && (
+        <div className="answer-checks" role="note">
+          <strong>Check before relying on this</strong>
+          <ul>
+            {warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {notes.map((note) => (
+        <p className="understood" key={note}>
+          {note}
+        </p>
+      ))}
+    </>
+  )
+}
+
 function Thinking({ searchOnly }) {
   const [seconds, setSeconds] = useState(0)
   useEffect(() => {
@@ -177,10 +215,76 @@ function Thinking({ searchOnly }) {
   )
 }
 
-function Turn({ turn, onRetry }) {
+const PROBLEMS = ['Wrong figures', 'Missing information', 'Not from the documents', 'Wrong format', 'Wrong month or person']
+
+/** Asked after a thumbs-down. The answer goes to the Review page, where analysts turn it into a test case. */
+function WhyNotHelpful({ messageId, onDone }) {
+  const [picked, setPicked] = useState([])
+  const [detail, setDetail] = useState('')
+  const [saving, setSaving] = useState(false)
+  const toast = useToast()
+
+  async function save(event) {
+    event.preventDefault()
+    const comment = [picked.join('; '), detail.trim()].filter(Boolean).join(': ')
+    if (!comment) return onDone()
+    setSaving(true)
+    try {
+      await api(`rag/messages/${messageId}/feedback/`, { method: 'POST', body: { rating: 'down', comment } })
+      toast('Thanks: this goes to the review list')
+      onDone()
+    } catch (failure) {
+      toast(failure.message, 'error')
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form className="why-form" onSubmit={save}>
+      <fieldset>
+        <legend>What was wrong?</legend>
+        <div className="why-chips">
+          {PROBLEMS.map((problem) => (
+            <button
+              key={problem}
+              type="button"
+              className="why-chip"
+              aria-pressed={picked.includes(problem)}
+              onClick={() => setPicked((current) => (current.includes(problem) ? current.filter((item) => item !== problem) : [...current, problem]))}
+            >
+              {problem}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+      <label className="sr-only" htmlFor={`why-${messageId}`}>
+        Details
+      </label>
+      <textarea
+        id={`why-${messageId}`}
+        rows={2}
+        maxLength={1500}
+        placeholder="What should it have said? (optional)"
+        value={detail}
+        onChange={(event) => setDetail(event.target.value)}
+      />
+      <div className="why-actions">
+        <button type="button" className="button" onClick={onDone}>
+          Skip
+        </button>
+        <button type="submit" className="button button-primary" disabled={saving || (!picked.length && !detail.trim())}>
+          Send
+        </button>
+      </div>
+    </form>
+  )
+}
+
+function Turn({ turn, onRetry, onAskAgain }) {
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
   const [rating, setRating] = useState(turn.feedback)
+  const [askWhy, setAskWhy] = useState(false)
   const toast = useToast()
   const details = useRef(null)
   const stages = Object.entries(turn.stages ?? {}).filter(([name]) => STAGE_NAMES[name])
@@ -197,7 +301,8 @@ function Turn({ turn, onRetry }) {
     try {
       await api(`rag/messages/${turn.id}/feedback/`, next ? { method: 'POST', body: { rating: next } } : { method: 'DELETE' })
       setRating(next)
-      if (next) toast(next === 'up' ? 'Thanks: marked as helpful' : 'Thanks: marked as not helpful')
+      setAskWhy(next === 'down')
+      if (next === 'up') toast('Thanks: marked as helpful')
     } catch (failure) {
       toast(failure.message, 'error')
     }
@@ -241,6 +346,18 @@ function Turn({ turn, onRetry }) {
               ) : (
                 <FormattedAnswer turn={turn} onCite={showSource} />
               )}
+              <AnswerChecks checks={turn.checks} />
+              {turn.tampered?.length > 0 && (
+                <p className="understood decline-reason">
+                  Instructions aimed at the AI were found in {turn.tampered.map((item) => item.source).join(', ')} and removed
+                  before the model read it.
+                </p>
+              )}
+              {turn.stopped && (
+                <p className="understood decline-reason">
+                  Stopped. The server still finishes this answer, and the full version is in this conversation&apos;s history.
+                </p>
+              )}
               {(turn.blocked || turn.abstained || turn.quoted || turn.masked) && (
                 <div className="answer-flags">
                   {turn.blocked && <Status kind="critical">Blocked: {turn.block_reason.replaceAll('_', ' ')}</Status>}
@@ -248,6 +365,16 @@ function Turn({ turn, onRetry }) {
                   {turn.quoted && <Status kind="neutral">Quoted from the documents: the model did not write this</Status>}
                   {turn.masked && <Status kind="warning">Sensitive details hidden</Status>}
                 </div>
+              )}
+              {turn.cached && (
+                <p className="understood">
+                  This question was asked before with the same documents, so the earlier answer was reused.{' '}
+                  {onAskAgain && (
+                    <button type="button" className="link-button" onClick={onAskAgain}>
+                      Answer again
+                    </button>
+                  )}
+                </p>
               )}
               {turn.declineReason && <p className="understood decline-reason">{turn.declineReason}</p>}
               <div className="turn-actions">
@@ -289,12 +416,13 @@ function Turn({ turn, onRetry }) {
                 )}
                 {!turn.searchOnly && (
                   <span className="turn-meta">
-                    {turn.usage?.model ? turn.usage.model.split('/').pop() : 'No model call'}
+                    {turn.cached ? 'From cache' : turn.usage?.model ? turn.usage.model.split('/').pop() : 'No model call'}
                     {turn.timings?.total ? ` · ${duration(turn.timings.total)}` : ''}
                     {turn.format ? ` · ${turn.format.label}` : ''}
                   </span>
                 )}
               </div>
+              {askWhy && turn.id && <WhyNotHelpful messageId={turn.id} onDone={() => setAskWhy(false)} />}
               {open && (
                 <div className="turn-details" ref={details}>
                   {stages.length > 0 && (
@@ -321,6 +449,18 @@ function Turn({ turn, onRetry }) {
                         <dt>Generation</dt>
                         <dd>{duration(turn.timings?.generation)}</dd>
                       </div>
+                      {turn.timings?.first_token > 0 && (
+                        <div>
+                          <dt>First words</dt>
+                          <dd>{duration(turn.timings.first_token)}</dd>
+                        </div>
+                      )}
+                      {turn.usage?.tokens_per_second > 0 && (
+                        <div>
+                          <dt>Writing speed</dt>
+                          <dd>{turn.usage.tokens_per_second.toFixed(1)} tok/s</dd>
+                        </div>
+                      )}
                       {turn.requestId && (
                         <div>
                           <dt>Request ID</dt>
@@ -366,6 +506,11 @@ export default function Chat() {
   const navigate = useNavigate()
   const sessions = useApi('rag/sessions/?limit=200')
   const configs = useApi('rag/configs/')
+  const models = useApi('rag/models/')
+  // The chosen model is remembered between visits. Empty means the configuration's own.
+  const [model, setModel] = useState(() => localStorage.getItem('bench-model') ?? '')
+  const [searchMode, setSearchMode] = useState(false)
+  const streaming = useRef(null)
   const [turns, setTurns] = useState([])
   const [input, setInput] = useState('')
   const [config, setConfig] = useState('')
@@ -422,6 +567,18 @@ export default function Chat() {
     setHistoryOpen(!next && historyPreferred())
   }
 
+  function stop() {
+    streaming.current?.abort()
+  }
+
+  function chooseModel(value) {
+    setModel(value)
+    localStorage.setItem('bench-model', value)
+  }
+
+  const allConfigs = results(configs.data)
+  const activeConfigModel = (allConfigs.find((item) => String(item.id) === String(config)) ?? allConfigs.find((item) => item.is_default))?.llm_model
+
   function resize() {
     const box = composer.current
     if (!box) return
@@ -431,7 +588,7 @@ export default function Chat() {
 
   useEffect(resize, [input])
 
-  async function send(text, searchOnly = false) {
+  async function send(text, searchOnly = false, fresh = false) {
     const question = text.trim()
     if (!question || busy) return
     const key = crypto.randomUUID()
@@ -441,7 +598,9 @@ export default function Chat() {
     const body = {
       question,
       ...(config ? { rag_config: Number(config) } : {}),
+      ...(model && !searchOnly ? { llm_model: model } : {}),
       ...(sessionId && !searchOnly ? { session: Number(sessionId) } : {}),
+      ...(fresh ? { fresh: true } : {}),
     }
     const finish = (update) => setTurns((current) => current.map((turn) => (turn.key === key ? { key, question, ...update } : turn)))
     try {
@@ -450,7 +609,11 @@ export default function Chat() {
         data = await api('rag/retrieve/', { method: 'POST', body })
       } else {
         // The answer appears sentence by sentence. The "done" event has the final version, which replaces it.
-        await streamApi('rag/query/stream/', body, (name, event) => {
+        streaming.current = new AbortController()
+        await streamApi(
+          'rag/query/stream/',
+          body,
+          (name, event) => {
           if (name === 'text') {
             setTurns((current) =>
               current.map((turn) => (turn.key === key ? { ...turn, streamText: (turn.streamText ?? '') + event.text } : turn)),
@@ -460,7 +623,9 @@ export default function Chat() {
           } else if (name === 'error') {
             throw new ApiError(event.error, 500)
           }
-        })
+          },
+          { signal: streaming.current.signal },
+        )
         if (!data) throw new ApiError('The answer stopped before it finished. Try again.', 0)
       }
       finish(searchOnly ? { searchOnly: true, sources: data.chunks, stages: data.stages, timings: data.timings_ms } : fromServer(data))
@@ -472,8 +637,16 @@ export default function Chat() {
         sessions.reload()
       }
     } catch (failure) {
-      finish({ error: failure, searchOnly })
+      if (failure.name === 'AbortError') {
+        setTurns((current) =>
+          current.map((turn) => (turn.key === key ? { key, question, answer: turn.streamText ?? '', stopped: true } : turn)),
+        )
+        sessions.reload()
+      } else {
+        finish({ error: failure, searchOnly })
+      }
     }
+    streaming.current = null
     setBusy(false)
     composer.current?.focus()
   }
@@ -513,17 +686,6 @@ export default function Chat() {
             <PanelLeft size={16} aria-hidden="true" />
           </button>
           <div className="chat-title">{sessionId ? activeTitle || 'Conversation' : 'New chat'}</div>
-          <label className="chat-config">
-            <span className="sr-only">Configuration</span>
-            <select value={config} onChange={(e) => setConfig(e.target.value)}>
-              <option value="">Default configuration</option>
-              {results(configs.data).map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                </option>
-              ))}
-            </select>
-          </label>
           <button
             type="button"
             className="icon-button chat-expand"
@@ -557,7 +719,7 @@ export default function Chat() {
               </div>
             )}
             {turns.map((turn) => (
-              <Turn key={turn.key ?? turn.id} turn={turn} onRetry={() => retry(turn)} />
+              <Turn key={turn.key ?? turn.id} turn={turn} onRetry={() => retry(turn)} onAskAgain={busy ? null : () => send(turn.question, false, true)} />
             ))}
             <div ref={end} />
           </div>
@@ -567,7 +729,7 @@ export default function Chat() {
           className="chat-composer"
           onSubmit={(event) => {
             event.preventDefault()
-            send(input)
+            send(input, searchMode)
           }}
         >
           <div className="composer-box">
@@ -576,24 +738,43 @@ export default function Chat() {
               rows={1}
               value={input}
               aria-label="Message"
-              placeholder="Ask about your documents, or search for a name or topic"
+              placeholder={searchMode ? 'Search your documents for a name or topic' : 'Ask anything about your documents'}
               maxLength={2000}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
                   event.preventDefault()
-                  send(input)
+                  send(input, searchMode)
                 }
               }}
             />
             <div className="composer-tools">
-              <button type="button" className="composer-search" disabled={busy || !input.trim()} onClick={() => send(input, true)}>
-                <Search size={16} aria-hidden="true" />
-                Search only
-              </button>
-              <button type="submit" className="composer-send" disabled={busy || !input.trim()} aria-label="Send message" title="Send">
-                <ArrowUp size={16} strokeWidth={2.5} aria-hidden="true" />
-              </button>
+              {/* Under the message, as in other chat apps: a search mode, the settings, the model and send. */}
+              <div className="composer-side">
+                <button
+                  type="button"
+                  className="pill"
+                  aria-pressed={searchMode}
+                  onClick={() => setSearchMode((value) => !value)}
+                  title="Search only: show the matching passages without asking the model"
+                >
+                  <Search size={16} aria-hidden="true" />
+                  <span className="pill-label">Search</span>
+                </button>
+                <ConfigMenu configs={configs} value={config} onChange={setConfig} model={model} />
+              </div>
+              <div className="composer-side">
+                <ModelMenu value={model} onChange={chooseModel} models={models} configModel={activeConfigModel} />
+                {busy && streaming.current ? (
+                  <button type="button" className="composer-send composer-stop" onClick={stop} aria-label="Stop the answer" title="Stop">
+                    <Square size={12} fill="currentColor" aria-hidden="true" />
+                  </button>
+                ) : (
+                  <button type="submit" className="composer-send" disabled={busy || !input.trim()} aria-label="Send message" title="Send">
+                    <ArrowUp size={16} strokeWidth={2.5} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
             </div>
           </div>
           <p className="composer-note">Enter to send, Shift + Enter for a new line. Check important answers against the sources.</p>

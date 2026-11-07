@@ -1,7 +1,56 @@
 import { results, useApi } from '../api.js'
-import { Empty, ErrorNote, Page, Panel, Stat, useRunChoice } from '../components/common.jsx'
+import { Empty, ErrorNote, Page, Panel, Stat, Status, useRunChoice } from '../components/common.jsx'
 import { Rule, RuleScale } from '../components/Rule.jsx'
 import { duration, metricValue, percent } from '../format.js'
+
+const sloValue = (row) =>
+  row.unit === 'ms' ? duration(row.value) : row.unit === 'share' ? percent(row.value) : `${Number(row.value).toFixed(1)} tokens/s`
+const sloTarget = (row) => {
+  const value = row.unit === 'ms' ? duration(row.target) : row.unit === 'share' ? percent(row.target) : `${row.target} tokens/s`
+  return row.kind === 'max' ? `At most ${value}` : `At least ${value}`
+}
+
+/** Each objective against its target. Status words carry the verdict, so colour is never the only signal. */
+function SloTable({ slo }) {
+  return (
+    <>
+      <p className="panel-note">
+        {slo.judged === 0 ? 'Not enough answers yet to judge.' : `${slo.met} of ${slo.judged} objectives met.`} Cache hit rate:{' '}
+        {percent(slo.cache_hit_rate)}. Cost per question: {slo.cost_per_query ? slo.cost_per_query.toFixed(4) : '0 (local model)'}.
+      </p>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Objective</th>
+              <th>Target</th>
+              <th className="num">Measured</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {slo.objectives.map((row) => (
+              <tr key={row.key}>
+                <td>{row.label}</td>
+                <td>{sloTarget(row)}</td>
+                <td className="num">{row.met === null ? '–' : sloValue(row)}</td>
+                <td>
+                  {row.met === null ? (
+                    <Status kind="neutral">No data</Status>
+                  ) : row.met ? (
+                    <Status kind="good">Met</Status>
+                  ) : (
+                    <Status kind="critical">Missed</Status>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  )
+}
 
 /** p50, p95 and p99 of one latency on its own scale. Each is a separate chart: retrieval and end-to-end
  * differ by an order of magnitude, and a shared axis would crush one of them. */
@@ -82,9 +131,20 @@ export default function Performance() {
               <Stat label="p95" value={duration(liveData.p95_ms)} />
               <Stat label="p99" value={duration(liveData.p99_ms)} />
               <Stat label="Error rate" value={percent(liveData.error_rate)} />
+              <Stat label="First words, p95" value={liveData.first_token_p95_ms ? duration(liveData.first_token_p95_ms) : '–'} />
+              <Stat label="Writing speed" value={liveData.tokens_per_second ? `${liveData.tokens_per_second.toFixed(1)} tok/s` : '–'} />
+              <Stat label="From cache" value={percent(liveData.cache_hit_rate)} note={`${liveData.cache_hits} answers`} />
               <Stat label="Total tokens" value={(liveData.input_tokens + liveData.output_tokens).toLocaleString()} />
             </div>
+            {liveData.slo && (
+              <>
+                <h3 className="details-title">Service level objectives</h3>
+                <SloTable slo={liveData.slo} />
+              </>
+            )}
             {liveData.by_model.length > 0 && (
+              <>
+              <h3 className="details-title">By model</h3>
               <div className="table-wrap">
                 <table>
                   <thead>
@@ -107,6 +167,7 @@ export default function Performance() {
                   </tbody>
                 </table>
               </div>
+              </>
             )}
           </>
         )}

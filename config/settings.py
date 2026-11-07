@@ -41,6 +41,7 @@ MIDDLEWARE = [
     # First and last, so that request counts and latencies cover everything in between.
     "django_prometheus.middleware.PrometheusBeforeMiddleware",
     "apps.common.middleware.RequestIdMiddleware",
+    "apps.common.middleware.RequestSizeMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
@@ -179,9 +180,23 @@ CELERY_TIMEZONE = TIME_ZONE
 # Documents
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 DATA_UPLOAD_MAX_MEMORY_SIZE = MAX_UPLOAD_BYTES
+# JSON requests: a question, a dataset of cases. Larger is a mistake or an attack, and gets a 413.
+MAX_JSON_BODY_BYTES = 10 * 1024 * 1024
+# Signed-in sessions end after 12 hours without use; each request moves the end time on.
+SESSION_COOKIE_AGE = 12 * 3600
+SESSION_SAVE_EVERY_REQUEST = True
 ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".docx", ".csv", ".txt", ".md"}
 
 NLI_MODEL = env.NLI_MODEL
+
+# Targets for live chat over the chosen period. Cache hit rate and cost per query are shown beside them, without
+# targets: both depend on what people ask more than on the system.
+SLO = {
+    "p95_ms": env.SLO_P95_MS,
+    "first_token_p95_ms": env.SLO_FIRST_TOKEN_P95_MS,
+    "error_rate": env.SLO_ERROR_RATE,
+    "tokens_per_second": env.SLO_MIN_TOKENS_PER_SECOND,
+}
 
 # Evaluation thresholds. They live here so they are captured in each run's snapshot.
 EVALUATION = {

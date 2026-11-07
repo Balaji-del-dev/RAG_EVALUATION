@@ -1,4 +1,5 @@
 import {
+  ClipboardCheck,
   Database,
   FileChartColumn,
   FileText,
@@ -30,6 +31,7 @@ import Metrics from './pages/Metrics.jsx'
 import Overview from './pages/Overview.jsx'
 import Performance from './pages/Performance.jsx'
 import Reports from './pages/Reports.jsx'
+import Review from './pages/Review.jsx'
 import Runs from './pages/Runs.jsx'
 import Security from './pages/Security.jsx'
 
@@ -47,6 +49,8 @@ const NAVIGATION = [
     items: [
       ['/datasets', 'Datasets', Database],
       ['/runs', 'Runs', Play],
+      // Shows other people's questions, so analysts and admins only.
+      ['/review', 'Review', ClipboardCheck, 'edit'],
     ],
   },
   {
@@ -82,6 +86,15 @@ export default function App() {
       .catch(() => setUser(null))
   }, [])
 
+  useEffect(() => {
+    const ended = () => {
+      setSignedOut('expired')
+      setUser(null)
+    }
+    window.addEventListener('bench:session-ended', ended)
+    return () => window.removeEventListener('bench:session-ended', ended)
+  }, [])
+
   const signOut = useCallback(async () => {
     await api('accounts/logout/', { method: 'POST' })
     await api('accounts/csrf/')
@@ -107,7 +120,7 @@ export default function App() {
           {NAVIGATION.map(({ group, items }) => (
             <div className="rail-group" key={group}>
               <div className="rail-group-name">{group}</div>
-              {items.map(([to, label, Icon]) => (
+              {items.filter(([, , , needs]) => !needs || canEdit).map(([to, label, Icon]) => (
                 <NavLink key={to} to={to} end={to === '/'} className="rail-link" title={label} aria-label={label}>
                   <Icon size={16} aria-hidden="true" />
                   <span className="rail-label">{label}</span>
@@ -127,6 +140,7 @@ export default function App() {
           <Route path="/playground" element={<Navigate to="/chat" replace />} />
           <Route path="/datasets" element={<Datasets canEdit={canEdit} />} />
           <Route path="/runs" element={<Runs canEdit={canEdit} />} />
+          <Route path="/review" element={canEdit ? <Review /> : <Navigate to="/" replace />} />
           <Route path="/metrics" element={<Metrics />} />
           <Route path="/retrieval" element={<Category key="retrieval" category="retrieval" canEdit={canEdit} />} />
           <Route path="/context" element={<Category key="context" category="context" canEdit={canEdit} />} />

@@ -13,6 +13,10 @@ class QueryRequestSerializer(serializers.Serializer):
     question = serializers.CharField(max_length=20000)
     rag_config = serializers.PrimaryKeyRelatedField(queryset=RagConfig.objects.all(), required=False)
     session = serializers.IntegerField(required=False)
+    # An installed Ollama chat model for this question only, such as "ollama_chat/qwen2.5:3b". Empty: the config's.
+    llm_model = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    # Skip the answer cache: "Answer again" on a cached answer.
+    fresh = serializers.BooleanField(required=False, default=False)
 
 
 class ChatMessageSerializer(serializers.ModelSerializer):
@@ -50,6 +54,8 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             "usage",
             "request_id",
             "feedback",
+            "checks",
+            "cached",
         ]
 
     @staticmethod
@@ -100,7 +106,10 @@ class ChatMessageSerializer(serializers.ModelSerializer):
         performance = getattr(message, "performance", None)
         if performance:
             timings.update(
-                retrieval=performance.retrieval_ms, generation=performance.generation_ms, total=performance.total_ms
+                retrieval=performance.retrieval_ms,
+                generation=performance.generation_ms,
+                total=performance.total_ms,
+                first_token=performance.first_token_ms,
             )
         return timings
 
@@ -112,6 +121,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             "model": runs[0].model_name,
             "prompt_tokens": runs[0].prompt_tokens,
             "completion_tokens": runs[0].completion_tokens,
+            "tokens_per_second": getattr(getattr(message, "performance", None), "tokens_per_second", 0.0),
         }
 
 
@@ -136,3 +146,15 @@ class ChatSessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatSession
         fields = ["id", "title", "rag_config", "created_at", "updated_at", "messages"]
+
+
+class ReviewCaseSerializer(serializers.Serializer):
+    message_id = serializers.IntegerField()
+    reference_answer = serializers.CharField(required=False, allow_blank=True, max_length=20000, default="")
+    # False: the right behaviour is to decline, because the documents do not answer it.
+    answerable = serializers.BooleanField(required=False, default=True)
+
+
+class ReviewDatasetSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=255)
+    items = ReviewCaseSerializer(many=True, allow_empty=False, max_length=500)

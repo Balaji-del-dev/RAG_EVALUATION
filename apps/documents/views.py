@@ -10,6 +10,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.idempotency import idempotent
 from apps.common.permissions import IsAnalystOrAdmin, IsAnalystOrReadOnly
 from apps.common.tasks import enqueue
 from apps.documents.models import Document, DocumentChunk
@@ -36,6 +37,7 @@ class DocumentUploadView(APIView):
     permission_classes = [IsAnalystOrAdmin]
     parser_classes = [MultiPartParser]
 
+    @idempotent
     def post(self, request):
         serializer = UploadSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

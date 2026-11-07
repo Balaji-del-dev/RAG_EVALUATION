@@ -149,12 +149,37 @@ through LibreOffice and python-pptx, and interactive layouts in the chat screen.
 asked for once more as plain Markdown. A longer format gets a smaller source budget, so that prompt and answer still fit
 `OLLAMA_NUM_CTX`. Without a format, nothing changes, so evaluation scores are unaffected.
 
+**The same figure across documents is read by rule.** Asked for "exact salary data ... in table format", the search
+found all four payslips but only their address blocks, and the model declined. When a question names a figure
+(salary, net pay, earnings, deductions, LOP) and the search mostly found documents that label it, each document is
+read whole and the number after the label is taken: one row per document, each citing the chunk it came from, with
+no model call. A row's figure is left out rather than guessed when anything but separators lies between label and
+number. One document's figure is left to the normal answer, and a question about a policy that found the policy is
+not affected.
+
 **Chart colours are a validated palette.** Charts use eight categorical colours in a fixed order, with a light and a
 dark set, checked for colour-blind separation and contrast against each theme's surface. Three light-theme colours sit
 below 3:1 on white, so charts always print their values, and the table they were drawn from stays below them.
 
 **Greetings skip the search.** "hi" used to be searched for and answered from whatever matched. Short greetings and
 thanks now get a fixed reply, with no search and no LLM call. A greeting followed by a question is a question.
+
+**The answer cache serves exact repeats only.** The key is the question (spacing and end punctuation aside, case
+kept, because a hit skips the input guard), the configuration and model, the asker's readable documents, a version
+number that document and configuration saves bump, a hash of the pipeline code, and the date. A semantic cache was
+rejected: "may month salary" and "march month salary" are close neighbours to an embedding and would be given each
+other's figures. Declines, flagged answers and follow-ups are not cached, so asking again really tries again.
+
+**Vector and keyword search run in parallel.** The embedding and the Qdrant call run in a worker thread while BM25
+runs in the request thread. BM25 stays there because it reads the database, and a thread would open its own
+connection that nothing closes. The vector list is still fused first, so tie-breaking is unchanged.
+
+**Writing speed is measured only on streamed answers.** Without streaming, a call's time includes reading the
+prompt, which on this CPU can be 20 of the 22 seconds, so tokens per second would mostly measure prompt length.
+
+**Review hides who asked.** Judging an answer needs the question and the answer, so the Review page and its API
+leave the asker out. Reviewed answers become a new dataset version rather than changing an existing one, since a
+run's scores only mean something if its questions stay fixed.
 
 **Security is measured on outcomes.** Tests run as a least-privilege probe user. The check for forbidden
 chunks is written separately from `Document.accessible_to`, because a test that reuses the code under test

@@ -491,7 +491,7 @@ def _ask_payslips(monkeypatch, payslips, question, reply, earlier=None, earlier_
 
     searched = []
 
-    def fake_retrieve(query, config, document_ids):
+    def fake_retrieve(query, config, document_ids, **kwargs):
         searched.append(sorted(document_ids))
         rows = DocumentChunk.objects.filter(document_id__in=document_ids).select_related("document").order_by("id")
         return RetrievalResult(

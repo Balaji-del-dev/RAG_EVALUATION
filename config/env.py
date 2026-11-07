@@ -30,6 +30,15 @@ class Env(BaseSettings):
     QUERY_RATE_LIMIT: str = "30/min"
     # Comma-separated LiteLLM model names to try when the configured model fails, for example a hosted model.
     LLM_FALLBACK_MODELS: str = ""
+    # Judge each sentence of an answer against its sources with the NLI model. About 400 MB more in the web server.
+    ONLINE_NLI_CHECK: bool = False
+    # How long a repeated question is answered from the cache. 0 turns the cache off.
+    ANSWER_CACHE_SECONDS: int = 3600
+    # Service level objectives for live chat, shown on the Performance page. Sized for a small model on a CPU.
+    SLO_P95_MS: int = 30000
+    SLO_FIRST_TOKEN_P95_MS: int = 10000
+    SLO_ERROR_RATE: float = 0.02
+    SLO_MIN_TOKENS_PER_SECOND: float = 5.0
 
     MINIO_ENDPOINT: str = "127.0.0.1:9002"
     MINIO_ACCESS_KEY: str = ""

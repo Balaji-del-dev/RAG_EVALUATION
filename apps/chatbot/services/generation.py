@@ -618,6 +618,11 @@ def only_asks_for_a_format(text: str) -> bool:
     return not words
 
 
+def protected_prompts() -> list[str]:
+    """Prompt text an answer must not repeat, without the reply it is told to give when it cannot answer."""
+    return [text.replace(ABSTENTION_TEXT, " ") for text in {*PROMPTS.values(), REWRITE_PROMPT}]
+
+
 def answer_format(question: str) -> tuple[str, str]:
     """The key of the format the question asks for (see formats.py), and the question without the words that asked."""
     fmt, rest = formats.detect(question)
@@ -757,20 +762,30 @@ def generate(
             **({"on_token": stream} if stream else {}),
         )
 
-    llm = ask(layout, on_token)
-    text = _clean(llm.text, question, chunks)
-    if formats.is_degenerate(text):
+    # A loop shows either in the text, or as Ollama stopping the model: asked for a table, it wrote "| | | |" until
+    # Ollama gave up, and the user saw an error instead of an answer.
+    try:
+        llm = ask(layout, on_token)
+        text = _clean(llm.text, question, chunks)
+    except llm_gateway.RepetitionAborted:
+        llm, text = None, ""
+    if llm is None or formats.is_degenerate(text):
         if not fmt:
             return GeneratedAnswer(ABSTENTION_TEXT, True, [], llm, degenerate=True)
-        # Stuck repeating itself on the format, as with "```html" on every line: once more, as plain Markdown.
-        retry = ask("")
-        llm = llm_gateway.LLMResponse(
-            retry.text,
-            retry.model,
-            llm.prompt_tokens + retry.prompt_tokens,
-            llm.completion_tokens + retry.completion_tokens,
-            llm.latency_ms + retry.latency_ms,
-        )
+        # Stuck on the format: once more, as plain Markdown.
+        try:
+            retry = ask("")
+        except llm_gateway.RepetitionAborted:
+            return GeneratedAnswer(ABSTENTION_TEXT, True, [], llm, degenerate=True)
+        if llm:
+            retry = llm_gateway.LLMResponse(
+                retry.text,
+                retry.model,
+                llm.prompt_tokens + retry.prompt_tokens,
+                llm.completion_tokens + retry.completion_tokens,
+                llm.latency_ms + retry.latency_ms,
+            )
+        llm = retry
         text = _clean(retry.text, question, chunks)
         if formats.is_degenerate(text):
             return GeneratedAnswer(ABSTENTION_TEXT, True, [], llm, degenerate=True)
@@ -783,12 +798,7 @@ def generate(
         return GeneratedAnswer(quote, False, parse_citations(quote, chunks), llm, quoted=True)
     if answered:
         citations = parse_citations(text, chunks)
-        if fmt and fmt.render == "data":
-            text = formats.convert(text, fmt.target)
-        elif fmt and fmt.render == "drawn":
-            text = formats.draw(text, fmt.target, title=question)
-        elif fmt and fmt.render == "mermaid":
-            text = formats.fence_mermaid(text)
+        text = formats.lay_out(text, layout, question)
         return GeneratedAnswer(text, False, citations, llm)
     # The model declined. For a keyword search, the sources may still hold the term word for word.
     quote = quote_from_sources(question, chunks) if is_keyword_search(question) else ""

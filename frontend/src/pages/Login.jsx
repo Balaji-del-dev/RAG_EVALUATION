@@ -36,7 +36,7 @@ export default function Login({ onSignedIn, signedOut }) {
           {signedOut && (
             <p className="login-notice" role="status">
               <Check size={16} aria-hidden="true" />
-              You have been signed out.
+              {signedOut === 'expired' ? 'Your session ended. Sign in again to carry on.' : 'You have been signed out.'}
             </p>
           )}
           <h1>Sign in</h1>

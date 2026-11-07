@@ -35,6 +35,31 @@ class RequestIdMiddleware:
         return response
 
 
+class RequestSizeMiddleware:
+    """413 for a body larger than the request may be, said before the body is read. Uploads may be as large as
+    MAX_UPLOAD_BYTES; everything else is JSON and far smaller."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        from django.conf import settings
+        from django.http import JsonResponse
+
+        try:
+            length = int(request.META.get("CONTENT_LENGTH") or 0)
+        except ValueError:
+            length = 0
+        upload = request.content_type == "multipart/form-data"
+        limit = settings.MAX_UPLOAD_BYTES + 1024 * 1024 if upload else settings.MAX_JSON_BODY_BYTES
+        if length > limit:
+            return JsonResponse(
+                {"error": f"The request is {length / 1e6:.1f} MB, more than the {limit / 1e6:.0f} MB this accepts."},
+                status=413,
+            )
+        return self.get_response(request)
+
+
 class RequestIdLogFilter(logging.Filter):
     """Adds the current request ID to every log line, or "-" outside a request, as in the Celery worker."""
 

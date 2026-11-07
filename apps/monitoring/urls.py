@@ -5,4 +5,5 @@ from apps.monitoring import views
 urlpatterns = [
     path("metrics/", views.MetricsView.as_view()),
     path("health/", views.HealthView.as_view()),
+    path("slo/", views.SloView.as_view()),
 ]
