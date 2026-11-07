@@ -49,7 +49,7 @@ def pipeline(monkeypatch):
     """chat_service.run_rag replaced; `calls` lists the questions that reached it, `next` shapes the next answer."""
     state = SimpleNamespace(calls=[], next={})
 
-    def fake_run_rag(question, config, allowed, earlier_question=None, earlier_answer="", interactive=False):
+    def fake_run_rag(question, config, allowed, earlier_question=None, earlier_answer="", **kwargs):
         state.calls.append((question, earlier_question))
         return _answer(question, **state.next)
 
@@ -229,22 +229,39 @@ def test_vector_and_keyword_search_run_at_the_same_time(setup, monkeypatch):
 
 def _log(config, user, **fields):
     session = ChatSession.objects.create(user=user, title="t", rag_config=config)
-    message = ChatMessage.objects.create(session=session, question="q", cached=fields.pop("cached", False))
+    message = ChatMessage.objects.create(
+        session=session, question="q", cached=fields.pop("cached", False), abstained=fields.pop("abstained", False)
+    )
     return PerformanceLog.objects.create(message=message, **fields)
 
 
 def test_the_slo_report_judges_each_objective(setup, settings):
-    settings.SLO = {"p95_ms": 20000, "first_token_p95_ms": 5000, "error_rate": 0.3, "tokens_per_second": 8.0}
+    settings.SLO = {
+        "p95_ms": 20000,
+        "first_token_p95_ms": 5000,
+        "error_rate": 0.3,
+        "tokens_per_second": 8.0,
+        "answer_rate": 0.9,
+        "cost_per_query": 0.5,
+    }
     for _ in range(3):
         _log(setup.config, setup.viewer, total_ms=10000, first_token_ms=8000, tokens_per_second=12.0)
     _log(setup.config, setup.viewer, total_ms=0, cached=True, first_token_ms=50)
+    _log(setup.config, setup.viewer, total_ms=5000, first_token_ms=5000, abstained=True)  # declined
     client = APIClient()
     client.force_authenticate(setup.viewer)
     report = client.get("/api/monitoring/slo/?days=7").json()
     verdicts = {row["key"]: row["met"] for row in report["objectives"]}
-    assert verdicts == {"p95_ms": True, "first_token_p95_ms": False, "error_rate": True, "tokens_per_second": True}
-    assert (report["met"], report["judged"], report["cache_hit_rate"]) == (3, 4, 0.25)
-    assert client.get("/api/monitoring/metrics/?days=7").json()["slo"]["judged"] == 4
+    assert verdicts == {
+        "p95_ms": True,
+        "first_token_p95_ms": False,
+        "error_rate": True,
+        "tokens_per_second": True,
+        "answer_rate": False,  # 4 of 5 searched questions were answered
+        "cost_per_query": True,  # a local model costs 0, and 0 is a measurement
+    }
+    assert (report["met"], report["judged"], report["cache_hit_rate"]) == (4, 6, 0.2)
+    assert client.get("/api/monitoring/metrics/?days=7").json()["slo"]["judged"] == 6
 
 
 def test_with_no_answers_nothing_is_judged(setup):

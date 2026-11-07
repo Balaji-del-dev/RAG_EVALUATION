@@ -171,6 +171,7 @@ export function ConfigMenu({ configs, value, onChange, model }) {
         ['Search', `${current.retrieval_mode}, ${current.candidate_k} candidates, ${current.top_k} given to the model`],
         ['Reranker', current.reranker ? `${shortName(current.reranker)}, top ${current.rerank_top_n}` : 'none'],
         ['Diversity', current.use_mmr ? `MMR, λ ${current.mmr_lambda}` : 'off'],
+        ['Query expansion', { multi_query: 'Multi-query', hyde: 'HyDE' }[current.query_expansion] ?? 'off'],
         ['Chunks', `${current.chunk_strategy}, ${current.chunk_size} tokens, ${current.chunk_overlap} overlap`],
         ['Embeddings', shortName(current.embedding_model).replace('sentence-transformers/', '')],
       ]

@@ -19,6 +19,8 @@ SELECT
     percentile_cont(0.50) WITHIN GROUP (ORDER BY p.tokens_per_second)
         FILTER (WHERE p.succeeded AND p.tokens_per_second > 0)                       AS tokens_per_second,
     COUNT(*) FILTER (WHERE m.cached)                                                 AS cache_hits,
+    COUNT(*) FILTER (WHERE p.succeeded AND m.route = 'search' AND NOT m.blocked)     AS searched,
+    COUNT(*) FILTER (WHERE p.succeeded AND m.route = 'search' AND NOT m.blocked AND NOT m.abstained) AS answered,
     COALESCE(SUM(t.input_tokens), 0)                                                 AS input_tokens,
     COALESCE(SUM(t.output_tokens), 0)                                                AS output_tokens,
     COALESCE(SUM(c.input_cost + c.output_cost), 0)                                   AS total_cost
@@ -65,6 +67,9 @@ def live_metrics(days: int = 7) -> dict:
         "tokens_per_second": summary["tokens_per_second"] or 0.0,
         "cache_hits": summary["cache_hits"],
         "cache_hit_rate": summary["cache_hits"] / requests if requests else 0.0,
+        "searched": summary["searched"],
+        # Of the questions the documents were searched for, the share that got an answer rather than a decline.
+        "answer_rate": summary["answered"] / summary["searched"] if summary["searched"] else 0.0,
         "input_tokens": summary["input_tokens"],
         "output_tokens": summary["output_tokens"],
         "total_cost": float(summary["total_cost"]),
@@ -82,7 +87,11 @@ SLO_ROWS = [
     ("first_token_p95_ms", "First words on screen, 95th percentile", "ms", "max"),
     ("error_rate", "Failed requests", "share", "max"),
     ("tokens_per_second", "Model writing speed, median", "tokens/s", "min"),
+    ("answer_rate", "Questions answered from the documents", "share", "min"),
+    ("cost_per_query", "Cost per question", "money", "max"),
 ]
+# Objectives where 0 is a real measurement, not missing data.
+ZERO_IS_DATA = {"error_rate", "cost_per_query"}
 
 
 def slo_report(metrics: dict) -> dict:
@@ -91,7 +100,10 @@ def slo_report(metrics: dict) -> dict:
     rows = []
     for key, label, unit, kind in SLO_ROWS:
         value, target = metrics[key], targets[key]
-        measured = metrics["requests"] > 0 and (key == "error_rate" or value > 0)
+        if key == "answer_rate":
+            measured = metrics["searched"] > 0
+        else:
+            measured = metrics["requests"] > 0 and (key in ZERO_IS_DATA or value > 0)
         met = None if not measured else (value <= target if kind == "max" else value >= target)
         rows.append(
             {"key": key, "label": label, "unit": unit, "kind": kind, "value": value, "target": target, "met": met}
@@ -102,5 +114,4 @@ def slo_report(metrics: dict) -> dict:
         "met": sum(judged),
         "judged": len(judged),
         "cache_hit_rate": metrics["cache_hit_rate"],
-        "cost_per_query": metrics["cost_per_query"],
     }

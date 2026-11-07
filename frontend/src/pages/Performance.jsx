@@ -3,10 +3,17 @@ import { Empty, ErrorNote, Page, Panel, Stat, Status, useRunChoice } from '../co
 import { Rule, RuleScale } from '../components/Rule.jsx'
 import { duration, metricValue, percent } from '../format.js'
 
-const sloValue = (row) =>
-  row.unit === 'ms' ? duration(row.value) : row.unit === 'share' ? percent(row.value) : `${Number(row.value).toFixed(1)} tokens/s`
+const sloFormat = (unit, value) =>
+  unit === 'ms'
+    ? duration(value)
+    : unit === 'share'
+      ? percent(value)
+      : unit === 'money'
+        ? Number(value).toFixed(value ? 4 : 0)
+        : `${Number(value).toFixed(1)} tokens/s`
+const sloValue = (row) => sloFormat(row.unit, row.value)
 const sloTarget = (row) => {
-  const value = row.unit === 'ms' ? duration(row.target) : row.unit === 'share' ? percent(row.target) : `${row.target} tokens/s`
+  const value = sloFormat(row.unit, row.target)
   return row.kind === 'max' ? `At most ${value}` : `At least ${value}`
 }
 
@@ -16,7 +23,7 @@ function SloTable({ slo }) {
     <>
       <p className="panel-note">
         {slo.judged === 0 ? 'Not enough answers yet to judge.' : `${slo.met} of ${slo.judged} objectives met.`} Cache hit rate:{' '}
-        {percent(slo.cache_hit_rate)}. Cost per question: {slo.cost_per_query ? slo.cost_per_query.toFixed(4) : '0 (local model)'}.
+        {percent(slo.cache_hit_rate)}. Costs are in each configuration&apos;s currency; local models cost 0.
       </p>
       <div className="table-wrap">
         <table>

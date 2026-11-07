@@ -303,3 +303,20 @@ def test_ollamas_repeat_abort_is_told_apart_from_a_service_failure(monkeypatch):
     monkeypatch.setattr(litellm, "completion", fail)
     with pytest.raises(llm_gateway.RepetitionAborted):
         llm_gateway.complete([{"role": "user", "content": "x"}], model="ollama_chat/qwen2.5:1.5b")
+
+
+def test_repeated_table_rows_are_dropped_and_renumbered():
+    """The real reply: seven leave rows, then the same seven again."""
+    rows = ["| 1 | Sick Leave | 10 Days | [S1] |", "| 2 | Paternity Leave | 5 Days | [S1] |"]
+    repeat = ["| 3 | Sick Leave | 10 Days | [S1] |", "| 4 | Paternity Leave | 5 Days | [S1] |"]
+    text = "\n".join(
+        ["Leave types:", "| # | Leave | Days | Source |", "|---|---|---|---|", *rows, *repeat, "", "Done."]
+    )
+    assert formats.without_repeated_rows(text) == "\n".join(
+        ["Leave types:", "| # | Leave | Days | Source |", "|---|---|---|---|", *rows, "", "Done."]
+    )
+    # A row that differs in any cell stays, and the rows after a removed one are numbered again.
+    mixed = "| # | Leave | Days |\n|---|---|---|\n| 1 | Sick | 12 |\n| 2 | Sick | 12 |\n| 3 | Earned | 18 |"
+    assert formats.without_repeated_rows(mixed).splitlines()[-1] == "| 2 | Earned | 18 |"
+    plain = "| Leave | Days |\n|---|---|\n| Sick | 12 |\n| Sick | 12 |"
+    assert formats.without_repeated_rows(plain).count("| Sick | 12 |") == 1

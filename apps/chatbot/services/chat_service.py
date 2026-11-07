@@ -7,8 +7,9 @@ import time
 from django.db import transaction
 
 from apps.chatbot.models import ChatMessage, ChatSession, LLMRun
-from apps.chatbot.services import answer_cache, generation
+from apps.chatbot.services import answer_cache, generation, routing
 from apps.chatbot.services.rag_workflow import RagOutcome, run_rag, stream_rag
+from apps.common import deadline
 from apps.common.exceptions import ServiceUnavailable
 from apps.common.middleware import current_request_id
 from apps.monitoring.models import CostRecord, PerformanceLog, TokenUsage
@@ -18,6 +19,7 @@ from apps.retrieval.models import RagConfig, RetrievalLog
 from apps.security.models import AuditLog
 from apps.security.services import guardrails
 from apps.security.services.access_control import allowed_document_ids
+from config.env import env
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +38,19 @@ def _begin(user, question: str, config: RagConfig, session: ChatSession | None) 
     context = {
         "earlier_question": (earlier.standalone_question or earlier.question) if earlier else None,
         "earlier_answer": earlier.answer if earlier else "",
+        # Read only for a question about the conversation itself, such as "summarise this thread".
+        "history": conversation_history(session) if routing.asks_about_conversation(question) else None,
     }
     return message, context
+
+
+MAX_HISTORY = 20
+
+
+def conversation_history(session: ChatSession) -> list[dict]:
+    """The answered questions so far, oldest first. Blocked ones are left out: their text was never shown."""
+    answered = session.messages.filter(blocked=False).exclude(answer="").order_by("-id")[:MAX_HISTORY]
+    return [{"question": m.standalone_question or m.question, "answer": m.answer} for m in reversed(answered)]
 
 
 def _complete_sentences(text: str) -> tuple[str, str]:
@@ -76,17 +89,24 @@ def ask_streaming(user, question: str, config: RagConfig, session: ChatSession |
     else:
         pending, stopped, first_text_ms = "", False, 0.0
         try:
-            for kind, value in stream_rag(question, config, allowed, **context, interactive=True):
-                if kind == "outcome":
-                    outcome = value
-                    continue
-                ready, pending = _complete_sentences(pending + value)
-                if ready and not stopped:
-                    verdict = guardrails.check_output(ready)
-                    stopped = verdict.blocked
-                    if not stopped:
-                        first_text_ms = first_text_ms or (time.perf_counter() - started) * 1000
-                        yield "text", verdict.text
+            with deadline.within(env.REQUEST_DEADLINE_SECONDS):
+                for kind, value in stream_rag(question, config, allowed, **context, interactive=True):
+                    if kind == "outcome":
+                        outcome = value
+                        continue
+                    if kind == "reset":
+                        # The answer is being written again; what was sent so far will be replaced.
+                        pending = ""
+                        if not stopped:
+                            yield "reset", ""
+                        continue
+                    ready, pending = _complete_sentences(pending + value)
+                    if ready and not stopped:
+                        verdict = guardrails.check_output(ready)
+                        stopped = verdict.blocked
+                        if not stopped:
+                            first_text_ms = first_text_ms or (time.perf_counter() - started) * 1000
+                            yield "text", verdict.text
         except ServiceUnavailable:
             PerformanceLog.objects.create(message=message, succeeded=False)
             raise
@@ -107,7 +127,8 @@ def ask(
     outcome = _from_cache(question, config, allowed, context, fresh, started)
     if outcome is None:
         try:
-            outcome = run_rag(question, config, allowed, **context, interactive=True)
+            with deadline.within(env.REQUEST_DEADLINE_SECONDS):
+                outcome = run_rag(question, config, allowed, **context, interactive=True)
         except ServiceUnavailable:
             # Failed requests still count: they are what the error-rate metric measures.
             PerformanceLog.objects.create(message=message, succeeded=False)
@@ -137,6 +158,7 @@ def _persist(message: ChatMessage, outcome: RagOutcome, config: RagConfig, user)
     message.decline_reason = outcome.decline_reason
     message.checks = outcome.checks
     message.cached = outcome.cached
+    message.route = outcome.route
     message.quoted = outcome.quoted
     message.blocked = outcome.blocked
     message.block_reason = outcome.block_reason

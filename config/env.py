@@ -34,11 +34,16 @@ class Env(BaseSettings):
     ONLINE_NLI_CHECK: bool = False
     # How long a repeated question is answered from the cache. 0 turns the cache off.
     ANSWER_CACHE_SECONDS: int = 3600
+    # A chat request's whole time limit. The model call gets what is left of it. Evaluation runs have none.
+    REQUEST_DEADLINE_SECONDS: int = 180
     # Service level objectives for live chat, shown on the Performance page. Sized for a small model on a CPU.
     SLO_P95_MS: int = 30000
     SLO_FIRST_TOKEN_P95_MS: int = 10000
     SLO_ERROR_RATE: float = 0.02
     SLO_MIN_TOKENS_PER_SECOND: float = 5.0
+    SLO_MIN_ANSWER_RATE: float = 0.8
+    # In each configuration's currency. Local models cost 0.
+    SLO_MAX_COST_PER_QUERY: float = 0.5
 
     MINIO_ENDPOINT: str = "127.0.0.1:9002"
     MINIO_ACCESS_KEY: str = ""

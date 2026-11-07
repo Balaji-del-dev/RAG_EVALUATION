@@ -14,6 +14,11 @@ class RagConfig(TimeStampedModel):
         BM25 = "bm25", "BM25 only"
         HYBRID = "hybrid", "Hybrid (RRF)"
 
+    class QueryExpansion(models.TextChoices):
+        NONE = "", "None"
+        MULTI_QUERY = "multi_query", "Multi-query: two other wordings are searched too"
+        HYDE = "hyde", "HyDE: the embedding of a likely answer is searched"
+
     class ChunkStrategy(models.TextChoices):
         RECURSIVE = "recursive", "Recursive"
         STRUCTURE = "structure", "Structure-based"
@@ -31,6 +36,8 @@ class RagConfig(TimeStampedModel):
 
     # Retrieval
     retrieval_mode = models.CharField(max_length=16, choices=Mode.choices, default=Mode.HYBRID)
+    # Off by default: each option adds a model call to every question, and must show it helps in a run first.
+    query_expansion = models.CharField(max_length=16, choices=QueryExpansion.choices, blank=True, default="")
     candidate_k = models.IntegerField(default=20, help_text="Candidates fetched from each retriever")
     rrf_k = models.IntegerField(default=60)
     reranker = models.CharField(

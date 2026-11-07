@@ -189,13 +189,15 @@ ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".docx", ".csv", ".txt", ".md"}
 
 NLI_MODEL = env.NLI_MODEL
 
-# Targets for live chat over the chosen period. Cache hit rate and cost per query are shown beside them, without
-# targets: both depend on what people ask more than on the system.
+# Targets for live chat over the chosen period. Cache hit rate is shown beside them, without a target: it depends on
+# what people ask more than on the system.
 SLO = {
     "p95_ms": env.SLO_P95_MS,
     "first_token_p95_ms": env.SLO_FIRST_TOKEN_P95_MS,
     "error_rate": env.SLO_ERROR_RATE,
     "tokens_per_second": env.SLO_MIN_TOKENS_PER_SECOND,
+    "answer_rate": env.SLO_MIN_ANSWER_RATE,
+    "cost_per_query": env.SLO_MAX_COST_PER_QUERY,
 }
 
 # Evaluation thresholds. They live here so they are captured in each run's snapshot.

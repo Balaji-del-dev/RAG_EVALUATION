@@ -5,12 +5,14 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import httpx
 from django.core.cache import cache
 
+from apps.common import deadline
 from apps.common.exceptions import ServiceUnavailable
-from apps.monitoring.services import metrics
+from apps.monitoring.services import metrics, tracing
 from apps.monitoring.services.tracing import span
 from config.env import env, split_csv
 
@@ -118,6 +120,14 @@ def complete(
         num_retries=0,  # retried here, with backoff, so that failures can open the circuit breaker
         **kwargs,
     )
+    left = deadline.remaining()
+    if left is not None:
+        if left < 1:
+            metrics.record_llm_problem("deadline")
+            raise ServiceUnavailable(
+                f"This question ran out of time ({env.REQUEST_DEADLINE_SECONDS} s). Try a shorter question or layout."
+            )
+        request["timeout"] = min(env.LLM_TIMEOUT_SECONDS, left)
     if cache.get(_breaker(model) + ":open"):
         metrics.record_llm_problem("circuit_open")
         raise ServiceUnavailable(
@@ -128,19 +138,31 @@ def complete(
     first_token: list[float] = []
 
     def call():
-        with span("llm.complete", model=model, streamed=on_token is not None):
+        with span("llm.complete", model=model, streamed=on_token is not None) as current:
+            first_token_at = None
             if on_token is None:
-                return litellm.completion(**request)
-            parts = []
-            for part in litellm.completion(**request, stream=True):
-                parts.append(part)
-                text = part.choices[0].delta.content if part.choices else None
-                if text:
-                    if not first_token:
-                        first_token.append((time.perf_counter() - started) * 1000)
-                    on_token(text)
-            # Puts the pieces back together, with token usage, as if it had not been streamed.
-            return litellm.stream_chunk_builder(parts, messages=messages)
+                response = litellm.completion(**request)
+            else:
+                parts = []
+                for part in litellm.completion(**request, stream=True):
+                    parts.append(part)
+                    text = part.choices[0].delta.content if part.choices else None
+                    if text:
+                        if not first_token:
+                            first_token.append((time.perf_counter() - started) * 1000)
+                            first_token_at = datetime.now(UTC)
+                        on_token(text)
+                # Puts the pieces back together, with token usage, as if it had not been streamed.
+                response = litellm.stream_chunk_builder(parts, messages=messages)
+            usage = response.usage
+            tracing.mark_generation(
+                current,
+                model=model,
+                prompt_tokens=usage.prompt_tokens or 0,
+                completion_tokens=usage.completion_tokens or 0,
+                completion_start=first_token_at,
+            )
+            return response
 
     for attempt in range(len(RETRY_DELAYS) + 1):
         try:

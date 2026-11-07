@@ -277,6 +277,26 @@ PROMPTS["v3"] = PROMPTS["v2"]
 BEST_SOURCE_LAST = {"v3"}
 
 
+CORRECTION_NOTE = (
+    "\n\nAn earlier answer gave figures that appear in none of the sources: {figures}. Answer again, using only "
+    "figures written in the sources."
+)
+
+
+def combined(first: llm_gateway.LLMResponse | None, second: llm_gateway.LLMResponse | None):
+    """Two calls for one answer, counted as one: both took time and tokens."""
+    if not (first and second):
+        return first or second
+    return llm_gateway.LLMResponse(
+        second.text,
+        second.model,
+        first.prompt_tokens + second.prompt_tokens,
+        first.completion_tokens + second.completion_tokens,
+        first.latency_ms + second.latency_ms,
+        second.first_token_ms,
+    )
+
+
 @dataclass
 class GeneratedAnswer:
     text: str
@@ -737,7 +757,7 @@ def _clean(text: str, question: str, chunks: list[RetrievedChunk]) -> str:
     text = _without_example_echo(SOURCE_LABEL_ECHO_RE.sub("", text).strip(), question, chunks)
     if fence := WHOLE_FENCE_RE.match(text):
         text = fence.group("body").strip()
-    return text
+    return formats.without_repeated_rows(text)
 
 
 def generate(
@@ -747,15 +767,20 @@ def generate(
     whole_document: bool = False,
     on_token: Callable[[str], None] | None = None,
     layout: str = "",
+    correction: list[str] | None = None,
 ) -> GeneratedAnswer:
+    """`correction`: figures an earlier draft gave that are in no source. The model is told, and asked again."""
     if not chunks:
         return GeneratedAnswer(ABSTENTION_TEXT, True, [], None)
     fmt = formats.BY_KEY.get(layout)
 
     def ask(format_key: str, stream=None) -> llm_gateway.LLMResponse:
         wanted = formats.BY_KEY.get(format_key)
+        messages = build_messages(frame_question(question), chunks, config.prompt_version, format_key)
+        if correction:
+            messages[-1]["content"] += CORRECTION_NOTE.format(figures=", ".join(correction))
         return llm_gateway.complete(
-            build_messages(frame_question(question), chunks, config.prompt_version, format_key),
+            messages,
             model=config.llm_model,
             temperature=config.temperature,
             max_tokens=max(config.max_tokens, wanted.max_tokens) if wanted else config.max_tokens,

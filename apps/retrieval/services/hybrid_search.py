@@ -13,7 +13,7 @@ from apps.documents.models import DocumentChunk
 from apps.documents.services import embeddings
 from apps.monitoring.services.tracing import span
 from apps.retrieval.models import RagConfig
-from apps.retrieval.services import bm25_search, mmr, reranking, rrf, vector_search
+from apps.retrieval.services import bm25_search, mmr, query_expansion, reranking, rrf, vector_search
 
 
 @dataclass
@@ -35,6 +35,9 @@ class RetrievalResult:
     below_relevance_floor: bool = False
     # What happened that the reader should know: a fallback, a widened search.
     notes: list[str] = field(default_factory=list)
+    # With query expansion: the wordings the model wrote, and its call, so the call's time and tokens are counted.
+    expansions: list[str] = field(default_factory=list)
+    expansion_llm: object = None
 
     @property
     def chunk_ids(self) -> list[int]:
@@ -182,6 +185,27 @@ def _vector_hits(query: str, config: RagConfig, allowed: list[int]):
     return query_vector, hits, timings
 
 
+def _extra_lists(text: str, config: RagConfig, allowed: list[int], use_vector: bool, use_bm25: bool) -> list[list[int]]:
+    """Ranked chunk ids for one extra wording. A failure loses only this wording: the question itself was searched."""
+    lists = []
+    job = None
+    if use_vector:
+        job = _VECTOR_POOL.submit(contextvars.copy_context().run, _vector_hits, text, config, allowed)
+    if use_bm25:
+        try:
+            lists.append(
+                [hit.chunk_id for hit in bm25_search.backend().search(config, text, config.candidate_k, allowed)]
+            )
+        except ServiceUnavailable as exc:
+            logger.warning("Keyword search for an extra wording failed: %s", exc)
+    if job is not None:
+        try:
+            lists.insert(0, [hit.chunk_id for hit in job.result()[1]])
+        except ServiceUnavailable as exc:
+            logger.warning("Vector search for an extra wording failed: %s", exc)
+    return lists
+
+
 def _retrieve_once(query: str, config: RagConfig, allowed_document_ids: list[int]) -> "RetrievalResult":
     """Return the best chunks that the caller may read.
 
@@ -200,13 +224,26 @@ def _retrieve_once(query: str, config: RagConfig, allowed_document_ids: list[int
     use_vector = config.retrieval_mode in (RagConfig.Mode.VECTOR, RagConfig.Mode.HYBRID)
     use_bm25 = config.retrieval_mode in (RagConfig.Mode.BM25, RagConfig.Mode.HYBRID)
 
+    # Other wordings, when the configuration asks for them (see query_expansion.py).
+    extra_queries, vector_text = [], query
+    if mode := getattr(config, "query_expansion", ""):
+        started = time.perf_counter()
+        with span("retrieval.expand", mode=mode):
+            expanded = query_expansion.expand(query, config, mode)
+        _timed(result, "expand", started)
+        result.expansion_llm, extra_queries = expanded.llm, expanded.queries
+        result.expansions = expanded.queries + ([expanded.passage] if expanded.passage else [])
+        vector_text = expanded.passage or query
+        if expanded.note:
+            result.notes.append(expanded.note)
+
     # In a hybrid search the two engines run at the same time: the embedding and Qdrant call in a worker thread,
     # the keyword search here. The keyword search stays in this thread because it may read the database, and a
     # thread would open a connection of its own that nothing closes.
     vector_job = None
     if use_vector:
         context = contextvars.copy_context()  # keeps the request ID and trace parent in the worker's spans
-        vector_job = _VECTOR_POOL.submit(context.run, _vector_hits, query, config, sorted(allowed))
+        vector_job = _VECTOR_POOL.submit(context.run, _vector_hits, vector_text, config, sorted(allowed))
 
     bm25_hits, bm25_error = [], None
     if use_bm25:
@@ -224,6 +261,8 @@ def _retrieve_once(query: str, config: RagConfig, allowed_document_ids: list[int
         try:
             query_vector, hits, timings = vector_job.result()
             result.timings_ms.update(timings)
+            if vector_text != query:
+                query_vector = None  # HyDE searched the passage's embedding; diversity is judged against the question
         except ServiceUnavailable as exc:
             # In a hybrid search, keywords alone still answer. A vector-only search has nothing to fall back to.
             if not hybrid or bm25_error:
@@ -243,6 +282,12 @@ def _retrieve_once(query: str, config: RagConfig, allowed_document_ids: list[int
             result.notes.append("The keyword index did not answer, so this used vector search only.")
         ranked_lists.append([hit.chunk_id for hit in bm25_hits])
         result.stages["bm25"] = [{"chunk_id": hit.chunk_id, "score": round(hit.score, 4)} for hit in bm25_hits]
+
+    if extra_queries:
+        started = time.perf_counter()
+        for extra in extra_queries:
+            ranked_lists.extend(_extra_lists(extra, config, sorted(allowed), use_vector, use_bm25))
+        _timed(result, "expanded_search", started)
 
     fused = rrf.reciprocal_rank_fusion(ranked_lists, config.rrf_k)
     result.stages["rrf"] = [{"chunk_id": chunk_id, "score": round(score, 5)} for chunk_id, score in fused]

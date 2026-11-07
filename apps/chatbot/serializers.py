@@ -56,6 +56,7 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             "feedback",
             "checks",
             "cached",
+            "route",
         ]
 
     @staticmethod

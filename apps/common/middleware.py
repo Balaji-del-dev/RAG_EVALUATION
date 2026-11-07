@@ -23,15 +23,22 @@ class RequestIdMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
+        from apps.monitoring.services import tracing
+
         request.request_id = _valid(request.META.get("HTTP_X_REQUEST_ID")) or uuid.uuid4().hex
         request.correlation_id = _valid(request.META.get("HTTP_X_CORRELATION_ID")) or request.request_id
         token = current_request_id.set(request.request_id)
         try:
-            response = self.get_response(request)
+            # One trace per request, continuing the caller's when it sends a W3C traceparent header. Every pipeline
+            # span is a child of this one, so a slow answer can be followed from the request down to the model call.
+            with tracing.request_span(request) as trace_id:
+                request.trace_id = trace_id
+                response = self.get_response(request)
         finally:
             current_request_id.reset(token)
         response["X-Request-ID"] = request.request_id
         response["X-Correlation-ID"] = request.correlation_id
+        response["X-Trace-ID"] = request.trace_id
         return response
 
 

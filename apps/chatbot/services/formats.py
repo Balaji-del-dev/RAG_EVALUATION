@@ -1148,6 +1148,41 @@ def markdown_tables(text: str) -> list[list[list[str]]]:
     return [table for table in tables if len(table) >= 2]
 
 
+NUMBER_CELL_RE = re.compile(r"^\d+[.)]?$")
+
+
+def without_repeated_rows(text: str) -> str:
+    """Table rows that repeat an earlier row of the same table are dropped, and a "#" column is numbered again. Asked
+    for a comparison table, the small model wrote its seven rows, then the same seven again. A repeat adds nothing,
+    so taking it out cannot lose information."""
+    out, seen, number, numbered = [], set(), 0, False
+    for line in text.splitlines():
+        stripped = line.strip()
+        is_row = stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 2
+        if not is_row:
+            seen, number, numbered = set(), 0, False
+            out.append(line)
+            continue
+        if SEPARATOR_RE.match(line):
+            out.append(line)
+            continue
+        cells = _cells(line)
+        if not seen and not number:  # the header row
+            numbered = cells[0] in ("#", "No", "No.", "S.No", "Sl")
+            seen.add(("header",))
+            out.append(line)
+            continue
+        key = tuple(cell.lower() for cell in (cells[1:] if numbered and NUMBER_CELL_RE.match(cells[0]) else cells))
+        if key in seen:
+            continue
+        seen.add(key)
+        number += 1
+        if numbered and NUMBER_CELL_RE.match(cells[0]):
+            line = "| " + " | ".join([str(number), *cells[1:]]) + " |"
+        out.append(line)
+    return "\n".join(out)
+
+
 def _without_sources(value: str) -> tuple[str, list[str]]:
     found = [f"S{number}" for number in CITATION_RE.findall(value)]
     clean = CITATION_RE.sub("", value).replace("**", "").strip(" ,;")

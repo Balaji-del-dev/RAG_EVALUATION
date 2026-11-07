@@ -2,6 +2,10 @@
 
 input_guard ──blocked──> END
      ├──small talk──> small_talk -> END
+     ├──other language──> unsupported_language -> END
+     ├──about the library──> library -> END                  (chat only, see routing.py)
+     ├──too vague──> clarify -> END                           (chat only)
+     ├──about this conversation──> conversation -> output_guard (chat only)
      │
   understand -> retrieve -> generate -> output_guard -> END
 
@@ -18,8 +22,9 @@ from typing import TypedDict
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from apps.chatbot.services import fields, formats, generation, verification
+from apps.chatbot.services import fields, formats, generation, llm_gateway, routing, verification
 from apps.chatbot.services.llm_gateway import LLMResponse
+from apps.common import deadline
 from apps.monitoring.services.tracing import record_generation, span
 from apps.retrieval.models import RagConfig
 from apps.retrieval.services.hybrid_search import RetrievalResult, RetrievedChunk, retrieve
@@ -32,6 +37,9 @@ class RagState(TypedDict, total=False):
     allowed_document_ids: list[int]
     earlier_question: str | None
     earlier_answer: str
+    # The conversation so far, oldest first: [{"question", "answer"}]. Only for a question about the conversation.
+    history: list[dict] | None
+    route: str
     stream: bool
     interactive: bool
     checks: dict
@@ -90,12 +98,76 @@ def small_talk_node(state: RagState) -> RagState:
     return {"answer": generation.small_talk_reply(state["question"]), "abstained": False, "citations": []}
 
 
+def library_node(state: RagState) -> RagState:
+    with span("rag.library"):
+        text = routing.library_answer(state["question"], state["allowed_document_ids"])
+    layout = generation.answer_format(state["question"])[0]
+    return {
+        "answer": formats.lay_out(text, layout, state["question"]),
+        "abstained": False,
+        "citations": [],
+        "route": routing.LIBRARY,
+    }
+
+
+def clarify_node(state: RagState) -> RagState:
+    conversation = routing.asks_about_conversation(state["question"])
+    return {
+        "answer": routing.clarify_answer(state["allowed_document_ids"], conversation),
+        "abstained": False,
+        "citations": [],
+        "route": routing.CLARIFY,
+    }
+
+
+def conversation_node(state: RagState) -> RagState:
+    """A summary of the earlier answers, by the model, without a search. They passed the output guard when they were
+    given, and the summary passes it again after this."""
+    config, layout = state["config"], generation.answer_format(state["question"])[0]
+    on_token = None
+    if state.get("stream"):
+        write = get_stream_writer()
+        on_token = lambda text: write({"token": text})  # noqa: E731
+    started = time.perf_counter()
+    with span("rag.conversation"):
+        llm = llm_gateway.complete(
+            routing.conversation_messages(state["history"]),
+            model=config.llm_model,
+            temperature=0.0,
+            max_tokens=max(config.max_tokens, 400),
+            **({"on_token": on_token} if on_token else {}),
+        )
+    return {
+        "answer": formats.lay_out(llm.text, layout, state["question"]),
+        "raw_answer": llm.text,
+        "abstained": False,
+        "citations": [],
+        "llm": llm,
+        "generation_ms": (time.perf_counter() - started) * 1000,
+        "route": routing.CONVERSATION,
+    }
+
+
 def _after_input_guard(state: RagState) -> str:
     if state["blocked"]:
         return END
     if not input_checks.is_supported_language(state["question"]):
         return "unsupported_language"
-    return "small_talk" if generation.small_talk_reply(state["question"]) else "understand"
+    if generation.small_talk_reply(state["question"]):
+        return "small_talk"
+    if state.get("interactive"):
+        where = routing.route(state["question"], state.get("earlier_question"), state.get("history"))
+        if where != routing.SEARCH:
+            return where
+    return "understand"
+
+
+def _route_of(state: RagState) -> str:
+    if state.get("route"):
+        return state["route"]
+    if "retrieval" in state:
+        return "search"
+    return "blocked" if state.get("blocked") else "reply"
 
 
 def understand_node(state: RagState) -> RagState:
@@ -201,6 +273,11 @@ def generate_node(state: RagState) -> RagState:
     checks = {}
     if not generated.abstained and not generated.quoted:
         checks = verification.check(generated.text, chunks, question, generated.citations, state.get("layout", ""))
+    # Only if a second attempt could finish in the time left: it takes about as long as the first.
+    left = deadline.remaining()
+    has_time = bool(generated.llm) and (left is None or left > generated.llm.latency_ms / 1000 * 1.2)
+    if state.get("interactive") and checks.get("numbers") and has_time:
+        generated, checks = _write_again(state, question, chunks, generated, checks, on_token)
     return {
         "checks": checks,
         "raw_answer": generated.text,
@@ -221,6 +298,27 @@ def generate_node(state: RagState) -> RagState:
     }
 
 
+def _write_again(state, question, chunks, generated, checks, on_token):
+    """Once, in the chat: an answer with figures that are in no source is written again, told which ones. Asked for a
+    comparison table, the model gave sick leave as 10 days when the sources say 12. The better of the two drafts is
+    kept, judged by how many such figures each has, and the reader is told it happened."""
+    first = checks["numbers"]
+    layout, config = state.get("layout", ""), state["config"]
+    if on_token:
+        get_stream_writer()({"reset": True})
+    with span("rag.regenerate"):
+        retry = generation.generate(
+            question, chunks, config, state.get("whole_document", False), on_token, layout, correction=first
+        )
+    retry_checks = {}
+    if not retry.abstained and not retry.quoted:
+        retry_checks = verification.check(retry.text, chunks, question, retry.citations, layout)
+    better = not retry.abstained and len(retry_checks.get("numbers", [])) < len(first)
+    kept, kept_checks = (retry, retry_checks) if better else (generated, checks)
+    kept = replace(kept, llm=generation.combined(generated.llm, retry.llm))
+    return kept, {**kept_checks, "regenerated": {"figures": first, "fixed": "numbers" not in kept_checks}}
+
+
 def output_guard_node(state: RagState) -> RagState:
     with span("guard.output"):
         verdict = guardrails.check_output(state["answer"], generation.protected_prompts())
@@ -239,6 +337,9 @@ def _graph():
     graph.add_node("input_guard", input_guard_node)
     graph.add_node("small_talk", small_talk_node)
     graph.add_node("unsupported_language", unsupported_language_node)
+    graph.add_node(routing.LIBRARY, library_node)
+    graph.add_node(routing.CLARIFY, clarify_node)
+    graph.add_node(routing.CONVERSATION, conversation_node)
     graph.add_node("understand", understand_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("generate", generate_node)
@@ -251,10 +352,17 @@ def _graph():
             END: END,
             "small_talk": "small_talk",
             "unsupported_language": "unsupported_language",
+            routing.LIBRARY: routing.LIBRARY,
+            routing.CLARIFY: routing.CLARIFY,
+            routing.CONVERSATION: routing.CONVERSATION,
             "understand": "understand",
         },
     )
     graph.add_edge("small_talk", END)
+    # Both list file names the asker can already see on the Documents page; nothing a model wrote.
+    graph.add_edge(routing.LIBRARY, END)
+    graph.add_edge(routing.CLARIFY, END)
+    graph.add_edge(routing.CONVERSATION, "output_guard")
     graph.add_edge("unsupported_language", END)
     graph.add_edge("understand", "retrieve")
     graph.add_edge("retrieve", "generate")
@@ -296,6 +404,8 @@ class RagOutcome:
     tokens_per_second: float = 0.0
     # Served from the answer cache: no search or model call this time.
     cached: bool = False
+    # How it was answered: search, library, conversation, clarify, reply (a greeting or other fixed reply), blocked.
+    route: str = "search"
 
 
 def _speed(llm) -> float:
@@ -307,13 +417,16 @@ def _speed(llm) -> float:
     return round(llm.completion_tokens / (writing_ms / 1000), 2) if writing_ms > 0 else 0.0
 
 
-def _inputs(question, config, allowed_document_ids, earlier_question, earlier_answer, interactive=False) -> RagState:
+def _inputs(
+    question, config, allowed_document_ids, earlier_question, earlier_answer, interactive=False, history=None
+) -> RagState:
     return {
         "question": question,
         "config": config,
         "allowed_document_ids": allowed_document_ids,
         "earlier_question": earlier_question,
         "earlier_answer": earlier_answer,
+        "history": history,
         # The chat may widen a weak search. Evaluation runs never do, so their scores stay comparable.
         "interactive": interactive,
     }
@@ -326,11 +439,12 @@ def run_rag(
     earlier_question: str | None = None,
     earlier_answer: str = "",
     interactive: bool = False,
+    history: list[dict] | None = None,
 ) -> RagOutcome:
     started = time.perf_counter()
     with span("rag.pipeline", config=config.name):
         state = _graph().invoke(
-            _inputs(question, config, allowed_document_ids, earlier_question, earlier_answer, interactive)
+            _inputs(question, config, allowed_document_ids, earlier_question, earlier_answer, interactive, history)
         )
     return _outcome(question, config, state, started)
 
@@ -342,19 +456,21 @@ def stream_rag(
     earlier_question: str | None = None,
     earlier_answer: str = "",
     interactive: bool = False,
+    history: list[dict] | None = None,
 ) -> Iterator[tuple[str, str | RagOutcome]]:
     """run_rag, yielding ("token", text) while the answer is written and then ("outcome", RagOutcome). The tokens are
     a preview: the checks after generation can still change the answer, and the outcome holds the final one."""
     started = time.perf_counter()
     state: RagState = {}
     inputs = {
-        **_inputs(question, config, allowed_document_ids, earlier_question, earlier_answer, interactive),
+        **_inputs(question, config, allowed_document_ids, earlier_question, earlier_answer, interactive, history),
         "stream": True,
     }
     with span("rag.pipeline", config=config.name, streamed=True):
         for mode, data in _graph().stream(inputs, stream_mode=["custom", "values"]):
             if mode == "custom":
-                yield "token", data["token"]
+                # "reset": the answer so far is being written again, so the screen should drop it.
+                yield ("reset", "") if data.get("reset") else ("token", data["token"])
             else:
                 state = data
     yield "outcome", _outcome(question, config, state, started)
@@ -369,7 +485,7 @@ def _outcome(question: str, config: RagConfig, state: RagState, started: float) 
     llm: LLMResponse | None = state.get("llm")
     rewrite: LLMResponse | None = state.get("rewrite_llm")
     # Both calls take time and cost tokens, and the records should say so.
-    calls = [call for call in (rewrite, llm) if call]
+    calls = [call for call in (rewrite, retrieval.expansion_llm, llm) if call]
     standalone = state.get("standalone_question", question)
     outcome = RagOutcome(
         question=question,
@@ -395,6 +511,7 @@ def _outcome(question: str, config: RagConfig, state: RagState, started: float) 
         prompt_tokens=sum(call.prompt_tokens for call in calls),
         completion_tokens=sum(call.completion_tokens for call in calls),
         tokens_per_second=_speed(llm),
+        route=_route_of(state),
     )
     outcome.first_token_ms = outcome.total_ms
     if rewrite:

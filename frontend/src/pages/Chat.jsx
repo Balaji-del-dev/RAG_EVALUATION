@@ -57,6 +57,7 @@ function fromServer(message) {
     tampered: message.findings?.sources ?? [],
     checks: message.checks ?? {},
     cached: Boolean(message.cached),
+    route: message.route ?? 'search',
     answer: message.answer,
     abstained: message.abstained,
     declineReason: message.decline_reason,
@@ -175,7 +176,15 @@ function AnswerChecks({ checks }) {
     ...(checks.contradicted ?? []).map((sentence) => `The sources contradict: "${sentence}"`),
     ...(checks.unsupported ?? []).map((sentence) => `Not supported by its sources: "${sentence}"`),
   ].filter(Boolean)
-  const notes = checks.retrieval ?? []
+  const notes = [...(checks.retrieval ?? [])]
+  if (checks.regenerated) {
+    const figures = checks.regenerated.figures.join(', ')
+    notes.push(
+      checks.regenerated.fixed
+        ? `The first draft gave figures that are in no source (${figures}), so it was written again.`
+        : `The first draft gave figures that are in no source (${figures}). It was written again, and the version with fewer is shown.`,
+    )
+  }
   return (
     <>
       {warnings.length > 0 && (
@@ -213,6 +222,13 @@ function Thinking({ searchOnly }) {
       {searchOnly || seconds < 2 ? 'Searching your documents' : `Writing the answer, ${seconds} s`}
     </div>
   )
+}
+
+// How an answer was made, when it was not a document search. See apps/chatbot/services/routing.py.
+const ROUTE_LABELS = {
+  library: 'From the document list',
+  conversation: 'Summary of this conversation',
+  clarify: 'Question back to you',
 }
 
 const PROBLEMS = ['Wrong figures', 'Missing information', 'Not from the documents', 'Wrong format', 'Wrong month or person']
@@ -324,6 +340,11 @@ function Turn({ turn, onRetry, onAskAgain }) {
           <Gauge size={16} />
         </span>
         <div className="assistant-body">
+          {turn.pending && turn.rewriting && (
+            <p className="understood" role="status">
+              The first draft gave figures that are not in the sources, so it is being written again.
+            </p>
+          )}
           {turn.pending && !turn.streamText && <Thinking searchOnly={turn.searchOnly} />}
           {turn.pending && turn.streamText && (
             <AnswerText text={turn.streamText} streaming>
@@ -416,7 +437,10 @@ function Turn({ turn, onRetry, onAskAgain }) {
                 )}
                 {!turn.searchOnly && (
                   <span className="turn-meta">
-                    {turn.cached ? 'From cache' : turn.usage?.model ? turn.usage.model.split('/').pop() : 'No model call'}
+                    {turn.cached
+                      ? 'From cache'
+                      : ROUTE_LABELS[turn.route] ?? (turn.usage?.model ? turn.usage.model.split('/').pop() : 'No model call')}
+                    {turn.route === 'conversation' && turn.usage?.model ? ` · ${turn.usage.model.split('/').pop()}` : ''}
                     {turn.timings?.total ? ` · ${duration(turn.timings.total)}` : ''}
                     {turn.format ? ` · ${turn.format.label}` : ''}
                   </span>
@@ -618,6 +642,9 @@ export default function Chat() {
             setTurns((current) =>
               current.map((turn) => (turn.key === key ? { ...turn, streamText: (turn.streamText ?? '') + event.text } : turn)),
             )
+          } else if (name === 'reset') {
+            // The first draft had figures that are in no source; the model is writing it again.
+            setTurns((current) => current.map((turn) => (turn.key === key ? { ...turn, streamText: '', rewriting: true } : turn)))
           } else if (name === 'done') {
             data = event
           } else if (name === 'error') {

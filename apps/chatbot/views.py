@@ -7,6 +7,7 @@ from django.core.serializers.json import DjangoJSONEncoder
 from django.db.models import Count
 from django.http import HttpResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404
+from opentelemetry import context as otel_context
 from rest_framework.exceptions import ValidationError
 from rest_framework.mixins import DestroyModelMixin
 from rest_framework.pagination import LimitOffsetPagination
@@ -76,6 +77,10 @@ def answer_payload(request, message, outcome, config) -> dict:
         "decline_reason": message.decline_reason,
         "checks": message.checks,
         "cached": message.cached,
+        "route": message.route,
+        "created_at": message.created_at,
+        # The stream's last event: the answer above is final.
+        "complete": True,
         "quoted": message.quoted,
         "standalone_question": message.standalone_question,
         "answer_format": message.answer_format,
@@ -138,14 +143,18 @@ class QueryStreamView(APIView):
     def post(self, request):
         question, session, config, fresh = _parse(request)
         request_id = request.request_id
+        trace = otel_context.get_current()
 
         def events():
-            # The body is produced after the middleware has returned, so the request ID is set again here.
+            # The body is produced after the middleware has returned, so the request ID and trace are set again here.
             token = current_request_id.set(request_id)
+            trace_token = otel_context.attach(trace)
             try:
                 for kind, value in ask_streaming(request.user, question, config, session, fresh=fresh):
                     if kind == "text":
                         yield _event("text", {"text": value})
+                    elif kind == "reset":
+                        yield _event("reset", {})
                     else:
                         yield _event("done", answer_payload(request, *value, config))
             except ServiceUnavailable as exc:
@@ -154,6 +163,7 @@ class QueryStreamView(APIView):
                 logger.exception("Streaming answer failed")
                 yield _event("error", {"error": "Internal server error"})
             finally:
+                otel_context.detach(trace_token)
                 current_request_id.reset(token)
 
         response = StreamingHttpResponse(events(), content_type="text/event-stream")

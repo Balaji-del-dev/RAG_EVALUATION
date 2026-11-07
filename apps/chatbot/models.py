@@ -31,6 +31,8 @@ class ChatMessage(TimeStampedModel):
     # What the reader should double-check: figures not in the sources, citations to sources it was not given.
     checks = models.JSONField(default=dict, blank=True)
     cached = models.BooleanField(default=False, help_text="Answered from the answer cache")
+    # search, library, conversation, clarify, reply or blocked: see routing.py.
+    route = models.CharField(max_length=16, blank=True, default="search")
 
     class Meta:
         db_table = "chat_messages"

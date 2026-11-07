@@ -28,6 +28,7 @@ VERSION_KEY = "answer-cache:version"
 # serve answers the old code wrote.
 PIPELINE_FILES = [
     "apps/chatbot/services/rag_workflow.py",
+    "apps/chatbot/services/routing.py",
     "apps/chatbot/services/generation.py",
     "apps/chatbot/services/formats.py",
     "apps/chatbot/services/fields.py",

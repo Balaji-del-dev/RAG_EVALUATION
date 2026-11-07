@@ -23,6 +23,15 @@ TOKENS_PER_SECOND = Histogram(
     "rag_llm_tokens_per_second", "How fast the model wrote an answer", buckets=(1, 2, 5, 10, 15, 20, 30, 50, 100)
 )
 CACHE = Counter("rag_answer_cache_total", "Answer cache lookups", ["result"])
+STAGE_SECONDS = Histogram(
+    "rag_stage_seconds",
+    "Time spent in each pipeline stage: embed, vector, bm25, rerank, mmr, expand, retrieval, generation",
+    ["stage"],
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60),
+)
+ROUTES = Counter(
+    "rag_routes_total", "Chat answers by how they were made: search, library, conversation, ...", ["route"]
+)
 GUARD_BLOCKS = Counter("rag_guard_blocks_total", "Answers a guard blocked, by reason", ["reason"])
 LLM_PROBLEMS = Counter(
     "rag_llm_problems_total",
@@ -56,6 +65,14 @@ def record_answer(outcome) -> None:
         TOKENS_PER_SECOND.observe(outcome.tokens_per_second)
     if outcome.blocked:
         GUARD_BLOCKS.labels(outcome.block_reason or "unknown").inc()
+    ROUTES.labels(outcome.route).inc()
+    if outcome.cached:
+        return  # nothing ran, so there are no stage times to record
+    for stage, ms in outcome.stage_timings_ms.items():
+        STAGE_SECONDS.labels(stage).observe(ms / 1000)
+    for stage, ms in (("retrieval", outcome.retrieval_ms), ("generation", outcome.generation_ms)):
+        if ms:
+            STAGE_SECONDS.labels(stage).observe(ms / 1000)
     if outcome.prompt_tokens:
         LLM_TOKENS.labels("prompt").inc(outcome.prompt_tokens)
     if outcome.completion_tokens:

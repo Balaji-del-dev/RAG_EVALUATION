@@ -1,5 +1,12 @@
 import pytest
 
+from config.env import env
+
+# Tests read the same .env as the app. Without this, every test question would be traced into the real Langfuse
+# project, among the real users' questions.
+env.LANGFUSE_PUBLIC_KEY = env.LANGFUSE_SECRET_KEY = ""
+env.OTEL_EXPORTER_OTLP_ENDPOINT = ""
+
 
 @pytest.fixture(autouse=True)
 def isolated_cache(settings):
