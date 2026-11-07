@@ -159,7 +159,10 @@ def test_finished_run_is_not_executed_again():
     from apps.evaluation.services.run_executor import execute_run
 
     run = EvaluationRun.objects.create(
-        rag_config=RagConfig.objects.create(name="C"), run_type="security", status=JobStatus.COMPLETED, summary={"kept": 1}
+        rag_config=RagConfig.objects.create(name="C"),
+        run_type="security",
+        status=JobStatus.COMPLETED,
+        summary={"kept": 1},
     )
     execute_run(run.id)
     run.refresh_from_db()
@@ -199,9 +202,15 @@ class TestRealPipeline:
         from apps.retrieval.services.vector_search import drop_collection
 
         config = RagConfig.objects.create(name="Integration", chunk_size=40, chunk_overlap=5, top_k=2, candidate_k=5)
-        public = Document.objects.create(filename="pub.txt", file_path="p", sha256="p", status="ready", visibility="public")
-        secret = Document.objects.create(filename="sec.txt", file_path="s", sha256="s", status="ready", visibility="restricted")
-        DocumentPage.objects.create(document=public, page_number=1, content="Annual leave is 24 days for every employee.")
+        public = Document.objects.create(
+            filename="pub.txt", file_path="p", sha256="p", status="ready", visibility="public"
+        )
+        secret = Document.objects.create(
+            filename="sec.txt", file_path="s", sha256="s", status="ready", visibility="restricted"
+        )
+        DocumentPage.objects.create(
+            document=public, page_number=1, content="Annual leave is 24 days for every employee."
+        )
         DocumentPage.objects.create(document=secret, page_number=1, content="The secret annual leave bonus is 99 days.")
         index_document(public, config)
         index_document(secret, config)
@@ -247,7 +256,11 @@ class TestRealPipeline:
 
         source = ["Full-time employees receive 24 days of paid annual leave per calendar year."]
         supported, invented, contradicted = nli.judge_claims(
-            ["Employees get 24 days of annual leave.", "Employees receive a free company car.", "Employees receive 5 days of paid annual leave."],
+            [
+                "Employees get 24 days of annual leave.",
+                "Employees receive a free company car.",
+                "Employees receive 5 days of paid annual leave.",
+            ],
             source,
         )
         assert supported.supported

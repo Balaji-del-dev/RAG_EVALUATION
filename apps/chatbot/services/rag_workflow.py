@@ -1,6 +1,7 @@
 """The RAG workflow as a LangGraph state machine, shared by live chat and evaluation runs.
 
 input_guard ──blocked──> END
+     ├──small talk──> small_talk -> END
      │
   understand -> retrieve -> generate -> output_guard -> END
 
@@ -9,10 +10,12 @@ runs send single questions, so the follow-up part never runs for them.
 """
 
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import TypedDict
 
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
 from apps.chatbot.services import generation
@@ -28,6 +31,10 @@ class RagState(TypedDict, total=False):
     config: RagConfig
     allowed_document_ids: list[int]
     earlier_question: str | None
+    earlier_answer: str
+    stream: bool
+    layout: str
+    missing_months: list[str]
     standalone_question: str
     whole_document: bool
     rewrite_llm: LLMResponse
@@ -62,11 +69,30 @@ def input_guard_node(state: RagState) -> RagState:
     return {"blocked": False, "findings": {}}
 
 
+def small_talk_node(state: RagState) -> RagState:
+    return {"answer": generation.small_talk_reply(state["question"]), "abstained": False, "citations": []}
+
+
+def _after_input_guard(state: RagState) -> str:
+    if state["blocked"]:
+        return END
+    return "small_talk" if generation.small_talk_reply(state["question"]) else "understand"
+
+
 def understand_node(state: RagState) -> RagState:
     question, config, earlier = state["question"], state["config"], state.get("earlier_question")
-    understood = generation.correct_spelling(question, config.index_key, state["allowed_document_ids"])
+    layout, without_format = generation.answer_format(question)
+    # "download this as pdf" leaves nothing to search for: with a conversation, that means the previous answer.
+    understood = generation.correct_spelling(
+        without_format or question, config.index_key, state["allowed_document_ids"]
+    )
     update: RagState = {}
+    if earlier and layout and generation.only_asks_for_a_format(without_format):
+        # "here i need this data html format pls": the previous question again, answered in the new layout.
+        understood = generation.correct_spelling(earlier, config.index_key, state["allowed_document_ids"])
+        return {"standalone_question": understood, "layout": layout}
     if earlier:
+        understood = generation.resolve_time_reference(understood, earlier, state.get("earlier_answer", ""))
         started = time.perf_counter()
         with span("rag.understand"):
             understood, llm = generation.standalone_question(understood, earlier, config)
@@ -74,7 +100,7 @@ def understand_node(state: RagState) -> RagState:
     # This wording goes on to the answer step, so it has to pass the check the user's own words did.
     if understood != question and guardrails.check_input(understood).blocked:
         understood = question
-    return {**update, "standalone_question": understood}
+    return {**update, "standalone_question": understood, "layout": layout}
 
 
 def retrieve_node(state: RagState) -> RagState:
@@ -83,12 +109,22 @@ def retrieve_node(state: RagState) -> RagState:
         question, allowed = state["standalone_question"], state["allowed_document_ids"]
         named = generation.documents_named(question, allowed)
         # Always a subset of what the user may read, so this can only narrow the search.
-        result = retrieve(question, state["config"], named or allowed)
+        scope = named or allowed
+        months = generation.months_in(question)
+        if months:
+            # "LOP in May" must not be answered from the February payslip, which matches every other word.
+            scope = generation.documents_mentioning(months, state["config"].index_key, scope)
+        result = retrieve(question, state["config"], scope) if scope else RetrievalResult()
         whole_document = generation.asks_for_whole_document(question, named)
         if whole_document:
             # Search scores mean little for "summary of the brochure", so give the model the text in reading order.
             result.chunks.sort(key=lambda chunk: chunk.chunk_id)
-    return {"retrieval": result, "whole_document": whole_document, "retrieval_ms": (time.perf_counter() - started) * 1000}
+    return {
+        "retrieval": result,
+        "whole_document": whole_document,
+        "missing_months": generation.month_names(months) if months and not scope else "",
+        "retrieval_ms": (time.perf_counter() - started) * 1000,
+    }
 
 
 def generate_node(state: RagState) -> RagState:
@@ -102,16 +138,34 @@ def generate_node(state: RagState) -> RagState:
     elif unknown:
         names = ", ".join(f'"{term}"' for term in unknown)
         chunks, reason = [], f"No document you can read mentions {names}, so the model was not asked."
+    elif state.get("missing_months"):
+        chunks, reason = [], f"No document you can read covers {state['missing_months']}, so the model was not asked."
     elif not chunks:
         reason = "Nothing in the documents you can read matched this."
+    on_token = None
+    if state.get("stream"):
+        write = get_stream_writer()
+        on_token = lambda text: write({"token": text})  # noqa: E731
     started = time.perf_counter()
     with span("rag.generate"):
-        generated = generation.generate(question, chunks, config, state.get("whole_document", False))
+        generated = generation.generate(
+            question, chunks, config, state.get("whole_document", False), on_token, state.get("layout", "")
+        )
+    # Never another month's figures in place of the one asked about.
+    if not generated.abstained and (mismatch := generation.wrong_month(question, generated.text)):
+        generated = generation.GeneratedAnswer(generation.ABSTENTION_TEXT, True, [], generated.llm)
+        reason = mismatch
     return {
         "raw_answer": generated.text,
         "answer": generated.text,
         "abstained": generated.abstained,
-        "decline_reason": (reason or "The model read the sources and did not find an answer.") if generated.abstained else "",
+        "decline_reason": (
+            "The model kept repeating itself, so its answer was withheld."
+            if generated.degenerate
+            else reason or "The model read the sources and did not find an answer."
+        )
+        if generated.abstained
+        else "",
         "quoted": generated.quoted,
         "citations": generated.citations,
         "llm": generated.llm,
@@ -135,14 +189,16 @@ def output_guard_node(state: RagState) -> RagState:
 def _graph():
     graph = StateGraph(RagState)
     graph.add_node("input_guard", input_guard_node)
+    graph.add_node("small_talk", small_talk_node)
     graph.add_node("understand", understand_node)
     graph.add_node("retrieve", retrieve_node)
     graph.add_node("generate", generate_node)
     graph.add_node("output_guard", output_guard_node)
     graph.add_edge(START, "input_guard")
     graph.add_conditional_edges(
-        "input_guard", lambda state: END if state["blocked"] else "understand", {END: END, "understand": "understand"}
+        "input_guard", _after_input_guard, {END: END, "small_talk": "small_talk", "understand": "understand"}
     )
+    graph.add_edge("small_talk", END)
     graph.add_edge("understand", "retrieve")
     graph.add_edge("retrieve", "generate")
     graph.add_edge("generate", "output_guard")
@@ -156,6 +212,8 @@ class RagOutcome:
     answer: str
     # The complete question that was searched for, when a follow-up had to be rewritten. Otherwise empty.
     standalone_question: str = ""
+    # The format the question asked for, a key of formats.BY_KEY, or "".
+    answer_format: str = ""
     raw_answer: str = ""
     abstained: bool = False
     decline_reason: str = ""
@@ -175,19 +233,51 @@ class RagOutcome:
     completion_tokens: int = 0
 
 
+def _inputs(question, config, allowed_document_ids, earlier_question, earlier_answer) -> RagState:
+    return {
+        "question": question,
+        "config": config,
+        "allowed_document_ids": allowed_document_ids,
+        "earlier_question": earlier_question,
+        "earlier_answer": earlier_answer,
+    }
+
+
 def run_rag(
-    question: str, config: RagConfig, allowed_document_ids: list[int], earlier_question: str | None = None
+    question: str,
+    config: RagConfig,
+    allowed_document_ids: list[int],
+    earlier_question: str | None = None,
+    earlier_answer: str = "",
 ) -> RagOutcome:
     started = time.perf_counter()
     with span("rag.pipeline", config=config.name):
-        state = _graph().invoke(
-            {
-                "question": question,
-                "config": config,
-                "allowed_document_ids": allowed_document_ids,
-                "earlier_question": earlier_question,
-            }
-        )
+        state = _graph().invoke(_inputs(question, config, allowed_document_ids, earlier_question, earlier_answer))
+    return _outcome(question, config, state, started)
+
+
+def stream_rag(
+    question: str,
+    config: RagConfig,
+    allowed_document_ids: list[int],
+    earlier_question: str | None = None,
+    earlier_answer: str = "",
+) -> Iterator[tuple[str, str | RagOutcome]]:
+    """run_rag, yielding ("token", text) while the answer is written and then ("outcome", RagOutcome). The tokens are
+    a preview: the checks after generation can still change the answer, and the outcome holds the final one."""
+    started = time.perf_counter()
+    state: RagState = {}
+    inputs = {**_inputs(question, config, allowed_document_ids, earlier_question, earlier_answer), "stream": True}
+    with span("rag.pipeline", config=config.name, streamed=True):
+        for mode, data in _graph().stream(inputs, stream_mode=["custom", "values"]):
+            if mode == "custom":
+                yield "token", data["token"]
+            else:
+                state = data
+    yield "outcome", _outcome(question, config, state, started)
+
+
+def _outcome(question: str, config: RagConfig, state: RagState, started: float) -> RagOutcome:
     retrieval: RetrievalResult = state.get("retrieval") or RetrievalResult()
     llm: LLMResponse | None = state.get("llm")
     rewrite: LLMResponse | None = state.get("rewrite_llm")
@@ -198,6 +288,7 @@ def run_rag(
         question=question,
         answer=state["answer"],
         standalone_question=standalone if standalone != question else "",
+        answer_format=state.get("layout", ""),
         raw_answer=state.get("raw_answer", ""),
         abstained=state.get("abstained", False),
         decline_reason=state.get("decline_reason", ""),

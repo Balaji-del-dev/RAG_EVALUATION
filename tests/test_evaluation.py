@@ -39,7 +39,14 @@ EXPECTED_METRICS = {
         "guard_false_positive_rate",
         "guard_false_negative_rate",
     },
-    "performance": {"retrieval_latency", "e2e_latency", "token_consumption", "cost_per_query", "throughput", "error_rate"},
+    "performance": {
+        "retrieval_latency",
+        "e2e_latency",
+        "token_consumption",
+        "cost_per_query",
+        "throughput",
+        "error_rate",
+    },
 }
 
 
@@ -117,7 +124,14 @@ def test_declining_an_answerable_question_scores_zero_without_loading_models(reg
 
 def test_unanswerable_question_has_no_reference_metrics(registry):
     ctx = EvalContext(answerable=False, abstained=True)
-    for name in ("answer_correctness", "completeness", "bleu", "answer_relevancy", "faithfulness", "hallucination_rate"):
+    for name in (
+        "answer_correctness",
+        "completeness",
+        "bleu",
+        "answer_relevancy",
+        "faithfulness",
+        "hallucination_rate",
+    ):
         assert registry.evaluate(name, ctx) is None
 
 
@@ -127,12 +141,18 @@ def test_exact_match_ignores_case_punctuation_articles(registry):
 
 
 def test_context_coverage(registry):
-    ctx = EvalContext(contexts=["Employees receive 24 days of annual leave."], evidence=["24 days annual leave", "parental leave 16 weeks"])
+    ctx = EvalContext(
+        contexts=["Employees receive 24 days of annual leave."],
+        evidence=["24 days annual leave", "parental leave 16 weeks"],
+    )
     assert registry.evaluate("context_coverage", ctx).score == 0.5
 
 
 def test_citation_completeness_counts_valid_markers_only(registry):
-    ctx = EvalContext(answer="First claim holds true here [S1]. Second claim is cited badly [S9]. Third has no citation.", contexts=["x"])
+    ctx = EvalContext(
+        answer="First claim holds true here [S1]. Second claim is cited badly [S9]. Third has no citation.",
+        contexts=["x"],
+    )
     assert registry.evaluate("citation_completeness", ctx).score == pytest.approx(1 / 3)
 
 
@@ -211,7 +231,17 @@ def test_percentile_interpolates():
 
 class FakeResult:
     def __init__(self, **kwargs):
-        self.__dict__.update({"retrieval_ms": 10.0, "total_ms": 100.0, "blocked": False, "prompt_tokens": 100, "completion_tokens": 50, "cost": 2, **kwargs})
+        self.__dict__.update(
+            {
+                "retrieval_ms": 10.0,
+                "total_ms": 100.0,
+                "blocked": False,
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "cost": 2,
+                **kwargs,
+            }
+        )
 
 
 def test_performance_metrics(registry):

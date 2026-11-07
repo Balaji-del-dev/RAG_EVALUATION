@@ -1,7 +1,23 @@
-import { ArrowUp, Check, ChevronDown, Copy, Gauge, Maximize2, MessageSquare, Minimize2, PanelLeft, Plus, Search, Trash2 } from 'lucide-react'
+import {
+  ArrowUp,
+  Check,
+  ChevronDown,
+  Copy,
+  Gauge,
+  Maximize2,
+  MessageSquare,
+  Minimize2,
+  PanelLeft,
+  Plus,
+  Search,
+  ThumbsDown,
+  ThumbsUp,
+  Trash2,
+} from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { NavLink, useNavigate, useParams } from 'react-router-dom'
-import { api, results, useApi } from '../api.js'
+import { ApiError, api, results, streamApi, useApi } from '../api.js'
+import { AnswerText, DownloadMenu, FormattedAnswer } from '../components/AnswerView.jsx'
 import { ErrorNote, Status } from '../components/common.jsx'
 import { useToast } from '../components/toast.jsx'
 import { duration, score } from '../format.js'
@@ -18,8 +34,6 @@ const isPhone = () => window.matchMedia('(max-width: 720px)').matches
 const HISTORY_KEY = 'bench-history'
 const EXPANDED_KEY = 'bench-chat-expanded'
 const historyPreferred = () => localStorage.getItem(HISTORY_KEY) !== 'closed'
-// [S1] becomes a link to its source. [EMAIL_ADDRESS] and the like are marked as hidden.
-const ANSWER_TOKEN = /(\[S\d+\]|\[[A-Z][A-Z_]+\])/g
 
 function cleanSource(text) {
   return text
@@ -31,9 +45,13 @@ function cleanSource(text) {
 
 function fromServer(message) {
   return {
-    id: message.id,
+    // A fresh answer from the query endpoint has message_id; a saved one has id.
+    id: message.id ?? message.message_id,
+    feedback: message.feedback ?? null,
+    requestId: message.request_id,
     question: message.question,
     understoodAs: message.standalone_question,
+    format: message.format ?? null,
     answer: message.answer,
     abstained: message.abstained,
     declineReason: message.decline_reason,
@@ -141,31 +159,6 @@ function History({ open, activeId, onClose, onDeleted, sessions }) {
   )
 }
 
-function AnswerText({ text, onCite }) {
-  return (
-    <p className="answer">
-      {text.split(ANSWER_TOKEN).map((part, index) => {
-        const citation = part.match(/^\[S(\d+)\]$/)
-        if (citation) {
-          return (
-            <button type="button" className="cite" key={index} title={`Show source ${citation[1]}`} onClick={() => onCite(citation[1])}>
-              {citation[1]}
-            </button>
-          )
-        }
-        if (/^\[[A-Z][A-Z_]+\]$/.test(part)) {
-          return (
-            <span className="masked" key={index} title="Hidden by the security guard">
-              {part.slice(1, -1).toLowerCase().replaceAll('_', ' ')} hidden
-            </span>
-          )
-        }
-        return part
-      })}
-    </p>
-  )
-}
-
 function Thinking({ searchOnly }) {
   const [seconds, setSeconds] = useState(0)
   useEffect(() => {
@@ -187,6 +180,8 @@ function Thinking({ searchOnly }) {
 function Turn({ turn, onRetry }) {
   const [open, setOpen] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [rating, setRating] = useState(turn.feedback)
+  const toast = useToast()
   const details = useRef(null)
   const stages = Object.entries(turn.stages ?? {}).filter(([name]) => STAGE_NAMES[name])
   const sources = turn.sources ?? []
@@ -194,6 +189,18 @@ function Turn({ turn, onRetry }) {
   function showSource(number) {
     setOpen(true)
     setTimeout(() => details.current?.querySelector(`[data-source="${number}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 50)
+  }
+
+  // Clicking the active thumb again clears it.
+  async function rate(value) {
+    const next = rating === value ? null : value
+    try {
+      await api(`rag/messages/${turn.id}/feedback/`, next ? { method: 'POST', body: { rating: next } } : { method: 'DELETE' })
+      setRating(next)
+      if (next) toast(next === 'up' ? 'Thanks: marked as helpful' : 'Thanks: marked as not helpful')
+    } catch (failure) {
+      toast(failure.message, 'error')
+    }
   }
 
   async function copy() {
@@ -212,7 +219,12 @@ function Turn({ turn, onRetry }) {
           <Gauge size={16} />
         </span>
         <div className="assistant-body">
-          {turn.pending && <Thinking searchOnly={turn.searchOnly} />}
+          {turn.pending && !turn.streamText && <Thinking searchOnly={turn.searchOnly} />}
+          {turn.pending && turn.streamText && (
+            <AnswerText text={turn.streamText} streaming>
+              <span className="caret" aria-hidden="true" />
+            </AnswerText>
+          )}
           {turn.error && (
             <div>
               <ErrorNote error={turn.error} />
@@ -227,7 +239,7 @@ function Turn({ turn, onRetry }) {
               {turn.searchOnly ? (
                 <p className="answer-note">Search only: these sources were found, and the model was not asked. This is not saved to your history.</p>
               ) : (
-                <AnswerText text={turn.answer} onCite={showSource} />
+                <FormattedAnswer turn={turn} onCite={showSource} />
               )}
               {(turn.blocked || turn.abstained || turn.quoted || turn.masked) && (
                 <div className="answer-flags">
@@ -244,6 +256,31 @@ function Turn({ turn, onRetry }) {
                     {copied ? <Check size={16} aria-hidden="true" /> : <Copy size={16} aria-hidden="true" />}
                   </button>
                 )}
+                {!turn.searchOnly && turn.id && <DownloadMenu messageId={turn.id} />}
+                {!turn.searchOnly && turn.id && (
+                  <>
+                    <button
+                      type="button"
+                      className="icon-button feedback-button"
+                      onClick={() => rate('up')}
+                      title="Helpful"
+                      aria-label="Helpful"
+                      aria-pressed={rating === 'up'}
+                    >
+                      <ThumbsUp size={16} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button feedback-button"
+                      onClick={() => rate('down')}
+                      title="Not helpful"
+                      aria-label="Not helpful"
+                      aria-pressed={rating === 'down'}
+                    >
+                      <ThumbsDown size={16} aria-hidden="true" />
+                    </button>
+                  </>
+                )}
                 {(sources.length > 0 || stages.length > 0) && (
                   <button type="button" className="details-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
                     {sources.length} {sources.length === 1 ? 'source' : 'sources'}
@@ -254,6 +291,7 @@ function Turn({ turn, onRetry }) {
                   <span className="turn-meta">
                     {turn.usage?.model ? turn.usage.model.split('/').pop() : 'No model call'}
                     {turn.timings?.total ? ` · ${duration(turn.timings.total)}` : ''}
+                    {turn.format ? ` · ${turn.format.label}` : ''}
                   </span>
                 )}
               </div>
@@ -283,6 +321,14 @@ function Turn({ turn, onRetry }) {
                         <dt>Generation</dt>
                         <dd>{duration(turn.timings?.generation)}</dd>
                       </div>
+                      {turn.requestId && (
+                        <div>
+                          <dt>Request ID</dt>
+                          <dd className="request-id" title={turn.requestId}>
+                            {turn.requestId.slice(0, 12)}
+                          </dd>
+                        </div>
+                      )}
                       <div>
                         <dt>Tokens in / out</dt>
                         <dd>
@@ -399,7 +445,24 @@ export default function Chat() {
     }
     const finish = (update) => setTurns((current) => current.map((turn) => (turn.key === key ? { key, question, ...update } : turn)))
     try {
-      const data = await api(searchOnly ? 'rag/retrieve/' : 'rag/query/', { method: 'POST', body })
+      let data
+      if (searchOnly) {
+        data = await api('rag/retrieve/', { method: 'POST', body })
+      } else {
+        // The answer appears sentence by sentence. The "done" event has the final version, which replaces it.
+        await streamApi('rag/query/stream/', body, (name, event) => {
+          if (name === 'text') {
+            setTurns((current) =>
+              current.map((turn) => (turn.key === key ? { ...turn, streamText: (turn.streamText ?? '') + event.text } : turn)),
+            )
+          } else if (name === 'done') {
+            data = event
+          } else if (name === 'error') {
+            throw new ApiError(event.error, 500)
+          }
+        })
+        if (!data) throw new ApiError('The answer stopped before it finished. Try again.', 0)
+      }
       finish(searchOnly ? { searchOnly: true, sources: data.chunks, stages: data.stages, timings: data.timings_ms } : fromServer(data))
       if (!searchOnly) {
         if (!sessionId) {

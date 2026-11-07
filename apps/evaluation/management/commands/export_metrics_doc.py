@@ -37,7 +37,9 @@ class Command(BaseCommand):
                     continue
                 better = "Higher" if evaluator.higher_is_better else "Lower"
                 scope = "Per question" if evaluator.scope == "case" else "Per run"
-                lines.append(f"| {order} | {display_name} | {priority} | {question} | {evaluator.formula} | {better} | {scope} |")
+                lines.append(
+                    f"| {order} | {display_name} | {priority} | {question} | {evaluator.formula} | {better} | {scope} |"
+                )
             lines.append("")
         path = Path(settings.BASE_DIR) / "docs" / "METRICS.md"
         path.write_text("\n".join(lines))

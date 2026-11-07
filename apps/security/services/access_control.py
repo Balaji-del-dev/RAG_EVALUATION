@@ -5,9 +5,7 @@ from apps.documents.models import Document
 
 
 def allowed_document_ids(user) -> list[int]:
-    return list(
-        Document.objects.accessible_to(user).filter(status=Document.Status.READY).values_list("id", flat=True)
-    )
+    return list(Document.objects.accessible_to(user).filter(status=Document.Status.READY).values_list("id", flat=True))
 
 
 def all_ready_document_ids() -> list[int]:

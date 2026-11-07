@@ -3,13 +3,14 @@ string, for example ollama_chat/qwen2.5:1.5b or openai/gpt-4o-mini."""
 
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
 
 from apps.common.exceptions import ServiceUnavailable
 from apps.monitoring.services.tracing import span
-from config.env import env
+from config.env import env, split_csv
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,16 @@ class LLMResponse:
     latency_ms: float
 
 
-def complete(messages: list[dict], *, model: str, temperature: float = 0.0, max_tokens: int = 256) -> LLMResponse:
+def complete(
+    messages: list[dict],
+    *,
+    model: str,
+    temperature: float = 0.0,
+    max_tokens: int = 256,
+    on_token: Callable[[str], None] | None = None,
+) -> LLMResponse:
+    """One chat completion. With on_token, the text is streamed to it as it is written, and the full response is
+    still returned at the end. Models in LLM_FALLBACK_MODELS are tried in turn if this one fails."""
     import litellm  # slow import (several seconds), so it waits until the first LLM call
 
     litellm.suppress_debug_info = True
@@ -62,18 +72,31 @@ def complete(messages: list[dict], *, model: str, temperature: float = 0.0, max_
             "num_thread": env.OLLAMA_NUM_THREAD,
         }
 
+    if fallbacks := split_csv(env.LLM_FALLBACK_MODELS):
+        kwargs["fallbacks"] = fallbacks
+    request = dict(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=env.LLM_TIMEOUT_SECONDS,
+        num_retries=1,
+        **kwargs,
+    )
     started = time.perf_counter()
     try:
-        with span("llm.complete", model=model):
-            response = litellm.completion(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=env.LLM_TIMEOUT_SECONDS,
-                num_retries=1,
-                **kwargs,
-            )
+        with span("llm.complete", model=model, streamed=on_token is not None):
+            if on_token is None:
+                response = litellm.completion(**request)
+            else:
+                parts = []
+                for part in litellm.completion(**request, stream=True):
+                    parts.append(part)
+                    text = part.choices[0].delta.content if part.choices else None
+                    if text:
+                        on_token(text)
+                # Puts the pieces back together, with token usage, as if it had not been streamed.
+                response = litellm.stream_chunk_builder(parts, messages=messages)
     except Exception as exc:  # LiteLLM wraps provider errors in many exception types
         raise ServiceUnavailable(f"LLM call to {model} failed: {exc}") from exc
 

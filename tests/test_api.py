@@ -1,5 +1,6 @@
 """API behaviour: auth, roles, document permissions, validation, and the reports."""
 
+import json
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -234,6 +235,33 @@ def test_dataset_csv_upload(people):
     assert response.data["cases"][1]["answerable"] is False
 
 
+@pytest.mark.parametrize(
+    "filename,data,message",
+    [
+        # The real mistake: a Word document dropped on the dataset form.
+        ("VVDN_HR_Policy_Manual.docx", b"PK\x03\x04\x90 binary", "is a document, not a dataset"),
+        ("cases.xml", b"<cases/>", "Upload a .json or .csv file"),
+        ("cases.json", b"{not json", "is not valid JSON"),
+        ("cases.json", b'{"name": "x"}', 'without a "cases" list'),
+    ],
+)
+def test_a_wrong_dataset_file_gets_a_clear_message(people, filename, data, message):
+    upload = SimpleUploadedFile(filename, data)
+    response = client_for(people.analyst).post("/api/evaluation/datasets/upload/", {"file": upload, "name": "Set"})
+    assert response.status_code == 400
+    assert message in response.json()["error"]
+    assert "codec" not in response.json()["error"]
+
+
+def test_a_csv_saved_by_excel_on_windows_is_read(people):
+    text = "question,reference_answer,answerable,evidence\nCafé hours?,9 to 5 in the café,true,Café opens at 9\n"
+    upload = SimpleUploadedFile("cases.csv", text.encode("cp1252"))
+    response = client_for(people.analyst).post(
+        "/api/evaluation/datasets/upload/", {"file": upload, "name": "Excel set"}
+    )
+    assert response.status_code == 201, response.json()
+
+
 @patch("apps.evaluation.views.enqueue")
 def test_start_run_queues_task(enqueue, people, config, dataset):
     body = {"rag_config": config.id, "dataset": dataset.id, "run_type": "quality", "k": 3}
@@ -248,7 +276,9 @@ def test_run_validation(people, config, dataset):
     base = {"rag_config": config.id, "dataset": dataset.id}
     assert client.post("/api/evaluation/runs/", {"rag_config": config.id}, format="json").status_code == 400
     assert client.post("/api/evaluation/runs/", {**base, "frameworks": ["nope"]}, format="json").status_code == 400
-    assert client.post("/api/evaluation/runs/", {**base, "selected_metrics": ["nope"]}, format="json").status_code == 400
+    assert (
+        client.post("/api/evaluation/runs/", {**base, "selected_metrics": ["nope"]}, format="json").status_code == 400
+    )
     assert client.post("/api/evaluation/runs/", {**base, "k": 0}, format="json").status_code == 400
 
 
@@ -286,7 +316,9 @@ def indexed_corpus():
     from apps.documents.models import DocumentChunk
 
     public = Document.objects.create(filename="pub.txt", file_path="u1", sha256="u1", status="ready")
-    secret = Document.objects.create(filename="sec.txt", file_path="u2", sha256="u2", status="ready", visibility="restricted")
+    secret = Document.objects.create(
+        filename="sec.txt", file_path="u2", sha256="u2", status="ready", visibility="restricted"
+    )
     for document, text in (
         (public, "The learning budget is INR 40,000. See the Security Policy for Priya Raman."),
         (secret, "Project Bluebird has a budget of INR 90 crore."),
@@ -327,7 +359,9 @@ def brochure():
     from apps.documents.models import DocumentChunk
 
     document = Document.objects.create(filename="Tenarai Mini Brochure.pdf", file_path="b", sha256="b", status="ready")
-    DocumentChunk.objects.create(document=document, index_key="k", chunk_index=0, chunk_text="Tenarai is an AI company.", token_count=5)
+    DocumentChunk.objects.create(
+        document=document, index_key="k", chunk_index=0, chunk_text="Tenarai is an AI company.", token_count=5
+    )
     return document
 
 
@@ -380,8 +414,12 @@ def test_spelling_cannot_reveal_a_term_from_an_unreadable_document(brochure):
     from apps.chatbot.services.generation import correct_spelling
     from apps.documents.models import DocumentChunk
 
-    secret = Document.objects.create(filename="s.txt", file_path="s", sha256="s", status="ready", visibility="restricted")
-    DocumentChunk.objects.create(document=secret, index_key="k", chunk_index=0, chunk_text="Bluebird budget.", token_count=2)
+    secret = Document.objects.create(
+        filename="s.txt", file_path="s", sha256="s", status="ready", visibility="restricted"
+    )
+    DocumentChunk.objects.create(
+        document=secret, index_key="k", chunk_index=0, chunk_text="Bluebird budget.", token_count=2
+    )
     assert correct_spelling("Blubird", "k", [brochure.id]) == "Blubird"
     assert correct_spelling("Blubird", "k", [brochure.id, secret.id]) == "bluebird".capitalize()
 
@@ -404,10 +442,21 @@ def test_a_message_can_pick_a_document_by_file_name(brochure, question, named):
     assert documents_named(question, [brochure.id]) == ([brochure.id] if named else [])
 
 
+def test_i_want_this_policy_picks_the_policy_document():
+    from apps.chatbot.services.generation import documents_named
+
+    policy = Document.objects.create(
+        filename="VVDN_Technologies_IT_Policy_Manual.docx", file_path="v", sha256="v", status="ready"
+    )
+    assert documents_named("i want this it policy pls?", [policy.id]) == [policy.id]
+
+
 def test_naming_a_document_cannot_reach_an_unreadable_one(brochure):
     from apps.chatbot.services.generation import documents_named
 
-    secret = Document.objects.create(filename="salary_bands.md", file_path="s", sha256="s", status="ready", visibility="restricted")
+    secret = Document.objects.create(
+        filename="salary_bands.md", file_path="s", sha256="s", status="ready", visibility="restricted"
+    )
     assert documents_named("salary bands", [brochure.id]) == []
     assert documents_named("salary bands", [brochure.id, secret.id]) == [secret.id]
 
@@ -418,6 +467,221 @@ def test_a_real_policy_question_is_not_narrowed_to_a_file_with_policy_in_its_nam
     policy = Document.objects.create(filename="it_security_policy.md", file_path="p", sha256="p", status="ready")
     assert documents_named("explain leave policy", [policy.id]) == []
     assert documents_named("security policy", [policy.id]) == [policy.id]
+
+
+@pytest.fixture
+def payslips():
+    from apps.documents.models import DocumentChunk
+
+    made = {}
+    for month, filename in (("MAY", "Pay Slip_66567_May-26.pdf"), ("FEBRUARY", "Pay Slip_Feb_2026.pdf")):
+        document = Document.objects.create(filename=filename, file_path=filename, sha256=filename, status="ready")
+        for index, text in enumerate((f"PAYSLIP FOR THE MONTH OF {month} 2026 Emp Name Balamurugan", "LOP Days 0.0")):
+            DocumentChunk.objects.create(
+                document=document, index_key="k", chunk_index=index, chunk_text=text, token_count=5
+            )
+        made[month] = document
+    return made
+
+
+def _ask_payslips(monkeypatch, payslips, question, reply, earlier=None, earlier_answer=""):
+    from apps.chatbot.services import generation, rag_workflow
+    from apps.documents.models import DocumentChunk
+    from apps.retrieval.services.hybrid_search import RetrievalResult, RetrievedChunk
+
+    searched = []
+
+    def fake_retrieve(query, config, document_ids):
+        searched.append(sorted(document_ids))
+        rows = DocumentChunk.objects.filter(document_id__in=document_ids).select_related("document").order_by("id")
+        return RetrievalResult(
+            chunks=[RetrievedChunk(r.id, r.document_id, r.document.filename, 1, r.chunk_text, 1.0) for r in rows]
+        )
+
+    class Fake:
+        messages = None
+
+        def complete(self, messages, **kwargs):
+            from apps.chatbot.services.llm_gateway import LLMResponse
+
+            Fake.messages = messages
+            return LLMResponse(reply, "fake", 10, 5, 1.0)
+
+    monkeypatch.setattr(generation.llm_gateway, "complete", Fake().complete)
+    monkeypatch.setattr(rag_workflow, "retrieve", fake_retrieve)
+    config = SimpleNamespace(
+        name="c", index_key="k", llm_model="fake", prompt_version="v3", temperature=0.0, max_tokens=10
+    )
+    ids = [document.id for document in payslips.values()]
+    return rag_workflow.run_rag(question, config, ids, earlier, earlier_answer), searched, Fake
+
+
+def test_a_month_question_searches_only_documents_about_that_month(monkeypatch, payslips):
+    outcome, searched, _ = _ask_payslips(
+        monkeypatch, payslips, "How many LOP days in May 2026?", "In May 2026 LOP was 0 days [S1]."
+    )
+    assert searched == [[payslips["MAY"].id]]
+    assert not outcome.abstained
+
+
+def test_an_answer_about_another_month_is_withheld(monkeypatch, payslips):
+    """The real failure: asked about May, the model gave February's figure."""
+    outcome, _, _ = _ask_payslips(
+        monkeypatch, payslips, "How many LOP days in May 2026?", "February 2026 LOP is 0 days [S1]."
+    )
+    assert outcome.abstained
+    assert "February" in outcome.decline_reason and "May" in outcome.decline_reason
+
+
+def test_a_month_no_document_covers_is_declined_without_the_model(monkeypatch, payslips):
+    outcome, searched, fake = _ask_payslips(monkeypatch, payslips, "How many LOP days in June 2026?", "x")
+    assert outcome.abstained and "June" in outcome.decline_reason
+    assert searched == [] and fake.messages is None
+
+
+def test_this_month_follows_the_conversation(monkeypatch, payslips):
+    rewrite = "How many LOP days did Balamurugan have in May 2026?"
+    outcome, searched, _ = _ask_payslips(
+        monkeypatch,
+        payslips,
+        "how many lop on this month pls ?",
+        rewrite,
+        earlier="balamurugan thangadurai may month salary pls ?",
+        earlier_answer="The salary for the month of May 2026 is Rs. 57,559.00.",
+    )
+    assert outcome.standalone_question == rewrite
+    assert searched == [[payslips["MAY"].id]]
+
+
+def test_every_response_has_a_request_id():
+    client = APIClient()
+    given = client.get("/api/accounts/csrf/", HTTP_X_REQUEST_ID="client-abc-123")
+    assert given["X-Request-ID"] == "client-abc-123"
+    assert given["X-Correlation-ID"] == "client-abc-123"
+    # Not plainly an ID, so it is replaced rather than written into the logs.
+    made = client.get("/api/accounts/csrf/", HTTP_X_REQUEST_ID="bad id\nINFO fake log line")
+    assert len(made["X-Request-ID"]) == 32 and "\n" not in made["X-Request-ID"]
+
+
+def test_chat_requests_are_rate_limited(people, monkeypatch):
+    from rest_framework.throttling import ScopedRateThrottle
+
+    monkeypatch.setattr(ScopedRateThrottle, "THROTTLE_RATES", {**ScopedRateThrottle.THROTTLE_RATES, "query": "2/min"})
+    client = client_for(people.viewer)
+    codes = [client.post("/api/rag/query/", {}, format="json").status_code for _ in range(3)]
+    assert codes == [400, 400, 429]
+
+
+def test_repeated_wrong_passwords_lock_the_account_for_a_while(people):
+    client = APIClient()
+    codes = [
+        client.post("/api/accounts/login/", {"username": "c", "password": "wrong"}, format="json").status_code
+        for _ in range(5)
+    ]
+    assert codes == [400, 400, 400, 400, 429]  # the fifth failure locks the account
+    locked = client.post("/api/accounts/login/", {"username": "c", "password": "pw-c-12345"}, format="json")
+    assert locked.status_code == 429
+    assert "Too many failed sign-ins" in locked.json()["error"]
+    # Another user from the same address is not locked out.
+    assert (
+        client.post("/api/accounts/login/", {"username": "d", "password": "pw-d-12345"}, format="json").status_code
+        == 200
+    )
+
+
+def test_api_clients_can_sign_in_with_a_jwt(people):
+    from apps.security.models import AuditLog
+
+    client = APIClient()
+    assert client.post("/api/accounts/token/", {"username": "c", "password": "wrong"}, format="json").status_code == 401
+    assert AuditLog.objects.filter(action="login_failed", target="c").exists()
+    tokens = client.post("/api/accounts/token/", {"username": "c", "password": "pw-c-12345"}, format="json").json()
+    client.credentials(HTTP_AUTHORIZATION=f"Bearer {tokens['access']}")
+    assert client.get("/api/accounts/me/").json()["username"] == "c"
+    client.credentials(HTTP_AUTHORIZATION="Bearer not-a-token")
+    # 403 rather than 401: session sign-in comes first and DRF takes the challenge header from the first method.
+    assert client.get("/api/accounts/me/").status_code == 403
+
+
+def test_feedback_on_your_own_answer(people, conversation):
+    message = conversation.session.messages.get()
+    url = f"/api/rag/messages/{message.id}/feedback/"
+    assert client_for(people.other).post(url, {"rating": "up"}, format="json").status_code == 404
+    assert client_for(people.viewer).post(url, {"rating": "great"}, format="json").status_code == 400
+    assert client_for(people.viewer).post(url, {"rating": "down", "comment": "Wrong month"}, format="json").json() == {
+        "rating": "down",
+        "comment": "Wrong month",
+    }
+    detail = client_for(people.viewer).get(f"/api/rag/sessions/{conversation.session.id}/").json()
+    assert detail["messages"][0]["feedback"] == "down"
+    assert client_for(people.viewer).delete(url).status_code == 204
+    assert (
+        client_for(people.viewer).get(f"/api/rag/sessions/{conversation.session.id}/").json()["messages"][0]["feedback"]
+        is None
+    )
+
+
+def _stream(client, monkeypatch, pieces, answer="Final answer."):
+    from apps.chatbot.services import chat_service
+    from apps.chatbot.services.rag_workflow import RagOutcome
+
+    def fake_stream_rag(question, *args, **kwargs):
+        for piece in pieces:
+            yield "token", piece
+        yield "outcome", RagOutcome(question=question, answer=answer)
+
+    monkeypatch.setattr(chat_service, "stream_rag", fake_stream_rag)
+    # As browsers and SSE clients send it. Without a renderer for it, DRF answered 406 before the view ran.
+    response = client.post(
+        "/api/rag/query/stream/", {"question": "Who do I write to?"}, format="json", HTTP_ACCEPT="text/event-stream"
+    )
+    assert response["Content-Type"] == "text/event-stream"
+    events = []
+    for block in b"".join(response.streaming_content).decode().strip().split("\n\n"):
+        name, data = block.split("\n", 1)
+        events.append((name.removeprefix("event: "), json.loads(data.removeprefix("data: "))))
+    return events
+
+
+def test_metrics_are_served_to_this_machine_only(people, config, monkeypatch):
+    _stream(client_for(people.viewer), monkeypatch, ["Leave is 24 days. "])
+    local = APIClient().get("/metrics")
+    assert local.status_code == 200
+    body = local.content.decode()
+    assert 'rag_answers_total{outcome="answered"}' in body
+    assert "django_http_requests_total_by_method_total" in body
+    assert APIClient().get("/metrics", REMOTE_ADDR="10.0.0.5").status_code == 403
+
+
+def test_streaming_sends_sentences_then_the_final_answer(people, config, monkeypatch):
+    events = _stream(
+        client_for(people.viewer), monkeypatch, ["Leave is ", "24 days. Sick", " leave is 12 days. Unfinished"]
+    )
+    assert events[:-1] == [("text", {"text": "Leave is 24 days."}), ("text", {"text": " Sick leave is 12 days."})]
+    name, done = events[-1]
+    assert name == "done" and done["answer"] == "Final answer." and done["message_id"]
+    assert done["request_id"]
+
+
+def test_a_stream_request_that_fails_validation_gets_a_readable_error(people):
+    response = client_for(people.viewer).post(
+        "/api/rag/query/stream/", {}, format="json", HTTP_ACCEPT="text/event-stream"
+    )
+    assert response.status_code == 400
+    assert "question" in json.loads(response.content)
+
+
+def test_streaming_masks_pii_before_it_reaches_the_screen(people, config, monkeypatch):
+    events = _stream(client_for(people.viewer), monkeypatch, ["Write to priya.raman@example.com today. "])
+    streamed = " ".join(data["text"] for name, data in events if name == "text")
+    assert "priya.raman@example.com" not in streamed and "[EMAIL_ADDRESS]" in streamed
+
+
+def test_streaming_stops_at_a_blocked_sentence(people, config, monkeypatch):
+    events = _stream(
+        client_for(people.viewer), monkeypatch, ["Fine sentence. ", "You are stupid idiots. ", "More text. "]
+    )
+    assert [data["text"] for name, data in events if name == "text"] == ["Fine sentence."]
 
 
 def test_definitions_come_back_in_roadmap_order(people):
@@ -521,9 +785,13 @@ def test_values_that_look_the_same_are_not_called_best():
 
 def test_summary_finds_security_scores_when_the_latest_run_has_none(people, config, dataset):
     sync_metric_definitions()
-    security = EvaluationRun.objects.create(rag_config=config, run_type="full", dataset=dataset, status=JobStatus.COMPLETED)
+    security = EvaluationRun.objects.create(
+        rag_config=config, run_type="full", dataset=dataset, status=JobStatus.COMPLETED
+    )
     EvaluationRun.objects.filter(pk=security.id).update(finished_at=timezone.now() - timedelta(hours=1))
-    quality = EvaluationRun.objects.create(rag_config=config, dataset=dataset, status=JobStatus.COMPLETED, finished_at=timezone.now())
+    quality = EvaluationRun.objects.create(
+        rag_config=config, dataset=dataset, status=JobStatus.COMPLETED, finished_at=timezone.now()
+    )
     data = client_for(people.viewer).get("/api/reports/summary/").data
     assert data["latest_run"]["id"] == quality.id
     assert data["latest_security_run"]["id"] == security.id
@@ -547,7 +815,11 @@ def test_document_chunks_are_masked_for_viewers_only(people, config, role):
 
     document = Document.objects.create(filename="c.csv", file_path="c9", sha256="c9", status="ready")
     DocumentChunk.objects.create(
-        document=document, index_key=config.index_key, chunk_index=0, chunk_text="Mail priya.raman@example.com now.", token_count=5
+        document=document,
+        index_key=config.index_key,
+        chunk_index=0,
+        chunk_text="Mail priya.raman@example.com now.",
+        token_count=5,
     )
     text = str(client_for(getattr(people, role)).get(f"/api/documents/{document.id}/chunks/").data)
     assert ("priya.raman" in text) is (role == "analyst")
@@ -586,9 +858,15 @@ def conversation(people, config):
     from apps.retrieval.models import RetrievalLog
 
     public = Document.objects.create(filename="pub.txt", file_path="h1", sha256="h1", status="ready")
-    secret = Document.objects.create(filename="sec.txt", file_path="h2", sha256="h2", status="ready", visibility="restricted")
-    readable = DocumentChunk.objects.create(document=public, index_key="k", chunk_index=0, chunk_text="Mail priya.raman@example.com.", token_count=3)
-    hidden = DocumentChunk.objects.create(document=secret, index_key="k", chunk_index=0, chunk_text="Secret bonus.", token_count=2)
+    secret = Document.objects.create(
+        filename="sec.txt", file_path="h2", sha256="h2", status="ready", visibility="restricted"
+    )
+    readable = DocumentChunk.objects.create(
+        document=public, index_key="k", chunk_index=0, chunk_text="Mail priya.raman@example.com.", token_count=3
+    )
+    hidden = DocumentChunk.objects.create(
+        document=secret, index_key="k", chunk_index=0, chunk_text="Secret bonus.", token_count=2
+    )
     session = ChatSession.objects.create(user=people.viewer, title="Leave questions", rag_config=config)
     message = ChatMessage.objects.create(session=session, question="Q?", answer="A.", quoted=True)
     RetrievalLog.objects.create(
@@ -622,7 +900,9 @@ def test_opening_a_conversation_restores_its_sources_and_timings(people, convers
 
 def test_history_rechecks_permissions_and_masks_for_viewers(people, conversation):
     """A saved conversation must not be a way around permissions removed later, or around masking."""
-    sources = client_for(people.viewer).get(f"/api/rag/sessions/{conversation.session.id}/").data["messages"][0]["sources"]
+    sources = (
+        client_for(people.viewer).get(f"/api/rag/sessions/{conversation.session.id}/").data["messages"][0]["sources"]
+    )
     assert [source["chunk_id"] for source in sources] == [conversation.readable.id]
     assert "priya.raman" not in sources[0]["text"]
     assert sources[0]["score"] == 4.5
@@ -639,7 +919,9 @@ def test_cannot_continue_another_users_session(people, config):
     from apps.chatbot.models import ChatSession
 
     session = ChatSession.objects.create(user=people.other, rag_config=config)
-    response = client_for(people.viewer).post("/api/rag/query/", {"question": "Hi?", "session": session.id}, format="json")
+    response = client_for(people.viewer).post(
+        "/api/rag/query/", {"question": "Hi?", "session": session.id}, format="json"
+    )
     assert response.status_code == 404
 
 

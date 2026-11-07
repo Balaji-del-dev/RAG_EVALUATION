@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from apps.chatbot.models import ChatMessage, ChatSession
+from apps.chatbot.services import formats
 from apps.documents.models import Document, DocumentChunk
 from apps.retrieval.models import RagConfig
 from apps.security.services.guardrails import text_for_user
@@ -23,6 +24,8 @@ class ChatMessageSerializer(serializers.ModelSerializer):
     stages = serializers.SerializerMethodField()
     timings_ms = serializers.SerializerMethodField()
     usage = serializers.SerializerMethodField()
+    feedback = serializers.SerializerMethodField()
+    format = serializers.SerializerMethodField()
 
     class Meta:
         model = ChatMessage
@@ -30,6 +33,8 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             "id",
             "question",
             "standalone_question",
+            "answer_format",
+            "format",
             "answer",
             "citations",
             "abstained",
@@ -43,6 +48,8 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             "stages",
             "timings_ms",
             "usage",
+            "request_id",
+            "feedback",
         ]
 
     @staticmethod
@@ -60,7 +67,9 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             return []
         user = self.context["request"].user
         readable = Document.objects.accessible_to(user).values("id")
-        rows = DocumentChunk.objects.filter(id__in=log.retrieved_chunk_ids, document_id__in=readable).select_related("document")
+        rows = DocumentChunk.objects.filter(id__in=log.retrieved_chunk_ids, document_id__in=readable).select_related(
+            "document"
+        )
         by_id = {row.id: row for row in rows}
         scores = {}
         for stage in ("bm25", "vector", "rrf", "rerank", "mmr"):
@@ -78,19 +87,37 @@ class ChatMessageSerializer(serializers.ModelSerializer):
             if chunk_id in by_id
         ]
 
+    def get_format(self, message):
+        return formats.describe(message.answer_format)
+
+    def get_feedback(self, message):
+        user = self.context["request"].user
+        return next((item.rating for item in message.feedback.all() if item.user_id == user.id), None)
+
     def get_timings_ms(self, message):
         log = self._log(message)
         timings = dict(log.stages.get("timings_ms", {})) if log else {}
         performance = getattr(message, "performance", None)
         if performance:
-            timings.update(retrieval=performance.retrieval_ms, generation=performance.generation_ms, total=performance.total_ms)
+            timings.update(
+                retrieval=performance.retrieval_ms, generation=performance.generation_ms, total=performance.total_ms
+            )
         return timings
 
     def get_usage(self, message):
         runs = list(message.llm_runs.all())
         if not runs:
             return {"model": "", "prompt_tokens": 0, "completion_tokens": 0}
-        return {"model": runs[0].model_name, "prompt_tokens": runs[0].prompt_tokens, "completion_tokens": runs[0].completion_tokens}
+        return {
+            "model": runs[0].model_name,
+            "prompt_tokens": runs[0].prompt_tokens,
+            "completion_tokens": runs[0].completion_tokens,
+        }
+
+
+class FeedbackSerializer(serializers.Serializer):
+    rating = serializers.ChoiceField(choices=["up", "down"])
+    comment = serializers.CharField(required=False, allow_blank=True, max_length=2000, default="")
 
 
 class ChatSessionListSerializer(serializers.ModelSerializer):

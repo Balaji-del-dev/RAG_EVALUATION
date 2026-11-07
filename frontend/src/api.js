@@ -45,6 +45,47 @@ export async function api(path, { method = 'GET', body, form } = {}) {
   return data
 }
 
+/** POST, then read the server-sent events in the response, calling onEvent(name, data) for each. */
+export async function streamApi(path, body, onEvent) {
+  let response
+  try {
+    response = await fetch(`/api/${path}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'X-CSRFToken': csrfToken(), Accept: 'text/event-stream' },
+      body: JSON.stringify(body),
+    })
+  } catch {
+    throw new ApiError('Could not reach the server. Check that it is running.', 0)
+  }
+  if (!response.ok) {
+    // Errors are JSON, whichever content type they arrive with.
+    let data = null
+    try {
+      data = JSON.parse(await response.text())
+    } catch {
+      data = null
+    }
+    throw new ApiError(errorMessage(data, response.status), response.status)
+  }
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    let end
+    while ((end = buffer.indexOf('\n\n')) !== -1) {
+      const block = buffer.slice(0, end)
+      buffer = buffer.slice(end + 2)
+      const name = block.match(/^event: (.*)$/m)?.[1] ?? 'message'
+      const data = block.match(/^data: (.*)$/m)?.[1]
+      if (data) onEvent(name, JSON.parse(data))
+    }
+  }
+}
+
 export const results = (data) => data?.results ?? data ?? []
 
 /**

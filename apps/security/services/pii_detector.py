@@ -11,7 +11,21 @@ _lock = threading.Lock()
 
 # PERSON is left out on purpose. Company documents name people all the time ("contact Priya in HR"),
 # and masking every name would destroy answers. The identifiers below are the actual leakage risk.
-PII_ENTITIES = ["EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD", "US_SSN", "IBAN_CODE", "IP_ADDRESS", "IN_PAN", "IN_AADHAAR"]
+PII_ENTITIES = [
+    "EMAIL_ADDRESS",
+    "PHONE_NUMBER",
+    "CREDIT_CARD",
+    "US_SSN",
+    "IBAN_CODE",
+    "IP_ADDRESS",
+    "IN_PAN",
+    "IN_AADHAAR",
+    "IN_BANK_ACCOUNT",
+    "IN_UAN",
+]
+# A bare run of digits could be anything, so these score low on their own and only pass MIN_SCORE next to their label.
+# A payslip showed a viewer the bank account and UAN in full, with only the PAN masked.
+WEAK_NUMBER_SCORE = 0.1
 MIN_SCORE = 0.4
 
 SECRET_PATTERNS = {
@@ -22,7 +36,9 @@ SECRET_PATTERNS = {
     "BEARER_TOKEN": re.compile(r"\bBearer\s+[A-Za-z0-9._-]{16,}\b"),
     # The value must look like a secret, so that "the password is required" stays readable. The optional
     # colon matters: without it, "password is: abc" matched "password is:" and left the real value showing.
-    "PASSWORD_ASSIGNMENT": re.compile(r"(?i)\b(?:password|passwd|pwd)\s*(?:is\s*:?|[:=])\s*(?=\S*[0-9!@#$%^&*_-])\S{6,}"),
+    "PASSWORD_ASSIGNMENT": re.compile(
+        r"(?i)\b(?:password|passwd|pwd)\s*(?:is\s*:?|[:=])\s*(?=\S*[0-9!@#$%^&*_-])\S{6,}"
+    ),
     "PRIVATE_KEY": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 }
 
@@ -37,7 +53,7 @@ class Finding:
 
 @lru_cache(maxsize=1)
 def _analyzer():
-    from presidio_analyzer import AnalyzerEngine
+    from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
     from presidio_analyzer.nlp_engine import NlpEngineProvider
     from presidio_analyzer.predefined_recognizers import InAadhaarRecognizer, InPanRecognizer
 
@@ -52,6 +68,20 @@ def _analyzer():
     # Presidio ships these Indian identifiers but does not load them by default.
     analyzer.registry.add_recognizer(InPanRecognizer())
     analyzer.registry.add_recognizer(InAadhaarRecognizer())
+    analyzer.registry.add_recognizer(
+        PatternRecognizer(
+            supported_entity="IN_BANK_ACCOUNT",
+            patterns=[Pattern("account number", r"\b\d{9,18}\b", WEAK_NUMBER_SCORE)],
+            context=["account", "a/c", "acct", "bank"],
+        )
+    )
+    analyzer.registry.add_recognizer(
+        PatternRecognizer(
+            supported_entity="IN_UAN",
+            patterns=[Pattern("universal account number", r"\b\d{12}\b", WEAK_NUMBER_SCORE)],
+            context=["uan", "universal"],
+        )
+    )
     return analyzer
 
 

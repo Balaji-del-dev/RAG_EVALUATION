@@ -26,6 +26,10 @@ class Env(BaseSettings):
     CELERY_BROKER_URL: str = "redis://127.0.0.1:6379/8"
     CELERY_RESULT_BACKEND: str = "redis://127.0.0.1:6379/9"
     CACHE_URL: str = "redis://127.0.0.1:6379/10"
+    # Chat and search requests per user. Raise it for a load test, which otherwise measures the limit.
+    QUERY_RATE_LIMIT: str = "30/min"
+    # Comma-separated LiteLLM model names to try when the configured model fails, for example a hosted model.
+    LLM_FALLBACK_MODELS: str = ""
 
     MINIO_ENDPOINT: str = "127.0.0.1:9002"
     MINIO_ACCESS_KEY: str = ""

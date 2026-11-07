@@ -22,6 +22,7 @@ class RagConfigViewSet(ModelViewSet):
 
 
 class RetrieveView(APIView):
+    throttle_scope = "query"
     """Retrieval without the LLM: for inspecting each stage, and for load tests that target retrieval."""
 
     def post(self, request):
@@ -31,7 +32,9 @@ class RetrieveView(APIView):
         result = retrieve(serializer.validated_data["question"], config, allowed_document_ids(request.user))
         return Response(
             {
-                "chunks": [{**asdict(chunk), "text": text_for_user(request.user, chunk.text)} for chunk in result.chunks],
+                "chunks": [
+                    {**asdict(chunk), "text": text_for_user(request.user, chunk.text)} for chunk in result.chunks
+                ],
                 "stages": result.stages,
                 "timings_ms": result.timings_ms,
                 "below_relevance_floor": result.below_relevance_floor,

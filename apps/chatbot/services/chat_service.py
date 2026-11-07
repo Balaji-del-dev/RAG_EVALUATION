@@ -1,31 +1,80 @@
 """One user question from start to finish: permissions, pipeline, and all the SQL records it leaves."""
 
 import logging
+import re
 
 from django.db import transaction
 
 from apps.chatbot.models import ChatMessage, ChatSession, LLMRun
 from apps.chatbot.services import generation
-from apps.chatbot.services.rag_workflow import RagOutcome, run_rag
+from apps.chatbot.services.rag_workflow import RagOutcome, run_rag, stream_rag
 from apps.common.exceptions import ServiceUnavailable
+from apps.common.middleware import current_request_id
 from apps.monitoring.models import CostRecord, PerformanceLog, TokenUsage
+from apps.monitoring.services import metrics
 from apps.monitoring.services.cost_tracker import compute_cost
 from apps.retrieval.models import RagConfig, RetrievalLog
 from apps.security.models import AuditLog
+from apps.security.services import guardrails
 from apps.security.services.access_control import allowed_document_ids
 
 logger = logging.getLogger(__name__)
 
 
-def ask(user, question: str, config: RagConfig, session: ChatSession | None = None) -> tuple[ChatMessage, RagOutcome]:
+# A sentence ends at ., ! or ? followed by a space, or at a line break. "priya.raman@example.com" is not split.
+SENTENCE_END_RE = re.compile(r"[.!?](?=\s)|\n")
+
+
+def _begin(user, question: str, config: RagConfig, session: ChatSession | None) -> tuple[ChatMessage, dict]:
     if session is None:
         session = ChatSession.objects.create(user=user, title=question[:120], rag_config=config)
-    earlier = earlier_question(session, question)
-    message = ChatMessage.objects.create(session=session, question=question)
+    earlier = previous_answer(session, question)
+    message = ChatMessage.objects.create(session=session, question=question, request_id=current_request_id.get())
     # Saving moves this conversation to the top of the history list.
     session.save(update_fields=["updated_at"])
+    context = {
+        "earlier_question": (earlier.standalone_question or earlier.question) if earlier else None,
+        "earlier_answer": earlier.answer if earlier else "",
+    }
+    return message, context
+
+
+def _complete_sentences(text: str) -> tuple[str, str]:
+    """Split off the finished sentences, keeping the unfinished end for later."""
+    ends = [match.end() for match in SENTENCE_END_RE.finditer(text)]
+    return (text[: ends[-1]], text[ends[-1] :]) if ends else ("", text)
+
+
+def ask_streaming(user, question: str, config: RagConfig, session: ChatSession | None = None):
+    """ask(), yielding ("text", sentence) while the answer is written and then ("done", (message, outcome)).
+
+    Each sentence passes the output guard before it is sent, because masking only the final answer would show PII
+    on screen first. After a sentence the guard blocks, nothing more is sent, and the final answer replaces it all."""
+    message, context = _begin(user, question, config, session)
+    pending, stopped, outcome = "", False, None
     try:
-        outcome = run_rag(question, config, allowed_document_ids(user), earlier)
+        for kind, value in stream_rag(question, config, allowed_document_ids(user), **context):
+            if kind == "outcome":
+                outcome = value
+                continue
+            ready, pending = _complete_sentences(pending + value)
+            if ready and not stopped:
+                verdict = guardrails.check_output(ready)
+                stopped = verdict.blocked
+                if not stopped:
+                    yield "text", verdict.text
+    except ServiceUnavailable:
+        PerformanceLog.objects.create(message=message, succeeded=False)
+        raise
+    with transaction.atomic():
+        _persist(message, outcome, config, user)
+    yield "done", (message, outcome)
+
+
+def ask(user, question: str, config: RagConfig, session: ChatSession | None = None) -> tuple[ChatMessage, RagOutcome]:
+    message, context = _begin(user, question, config, session)
+    try:
+        outcome = run_rag(question, config, allowed_document_ids(user), **context)
     except ServiceUnavailable:
         # Failed requests still count: they are what the error-rate metric measures.
         PerformanceLog.objects.create(message=message, succeeded=False)
@@ -35,19 +84,20 @@ def ask(user, question: str, config: RagConfig, session: ChatSession | None = No
     return message, outcome
 
 
-def earlier_question(session: ChatSession, question: str) -> str | None:
-    """The last answered question, if this one depends on it. Its complete form is used, so a chain of follow-ups
-    keeps its meaning. A standalone question gets none, so earlier topics cannot pull its search off course."""
+def previous_answer(session: ChatSession, question: str) -> ChatMessage | None:
+    """The last answered message, if this question depends on it. Its question is used in complete form, so a chain
+    of follow-ups keeps its meaning, and its answer only to find which month "this month" is. A standalone question
+    gets none, so earlier topics cannot pull its search off course."""
     if not generation.is_follow_up(question):
         return None
     answered = session.messages.filter(blocked=False, abstained=False).exclude(answer="")
-    last = answered.order_by("-id").first()
-    return (last.standalone_question or last.question) if last else None
+    return answered.order_by("-id").first()
 
 
 def _persist(message: ChatMessage, outcome: RagOutcome, config: RagConfig, user) -> None:
     message.answer = outcome.answer
     message.standalone_question = outcome.standalone_question
+    message.answer_format = outcome.answer_format
     message.citations = outcome.citations
     message.abstained = outcome.abstained
     message.decline_reason = outcome.decline_reason
@@ -96,3 +146,4 @@ def _persist(message: ChatMessage, outcome: RagOutcome, config: RagConfig, user)
             target=f"chat_message:{message.id}",
             metadata={"reason": outcome.block_reason, "findings": outcome.findings},
         )
+    metrics.record_answer(outcome)

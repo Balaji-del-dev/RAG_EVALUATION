@@ -62,7 +62,10 @@ class CitationAccuracy(_ReliabilityMetric):
             return None
         correct, wrong = 0, []
         for claim, marker in cited:
-            if 1 <= marker <= len(ctx.contexts) and nli.judge_claims([claim.text], [ctx.contexts[marker - 1]])[0].supported:
+            if (
+                1 <= marker <= len(ctx.contexts)
+                and nli.judge_claims([claim.text], [ctx.contexts[marker - 1]])[0].supported
+            ):
                 correct += 1
             else:
                 wrong.append({"claim": claim.text, "marker": f"S{marker}"})

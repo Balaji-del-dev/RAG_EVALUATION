@@ -202,12 +202,16 @@ def documents(django_user_model, db):
     reader = django_user_model.objects.create_user("reader", password="x", role=Role.VIEWER)
     outsider = django_user_model.objects.create_user("outsider", password="x", role=Role.VIEWER)
     admin = django_user_model.objects.create_user("boss", password="x", role=Role.ADMIN)
-    public = Document.objects.create(filename="public.txt", file_path="a", sha256="a", visibility="public", status="ready")
+    public = Document.objects.create(
+        filename="public.txt", file_path="a", sha256="a", visibility="public", status="ready"
+    )
     restricted = Document.objects.create(
         filename="secret.txt", file_path="b", sha256="b", visibility="restricted", status="ready", owner=owner
     )
     restricted.allowed_users.add(reader)
-    return SimpleNamespace(owner=owner, reader=reader, outsider=outsider, admin=admin, public=public, restricted=restricted)
+    return SimpleNamespace(
+        owner=owner, reader=reader, outsider=outsider, admin=admin, public=public, restricted=restricted
+    )
 
 
 def test_outsider_sees_public_only(documents):
@@ -239,3 +243,14 @@ def test_group_grants_access(documents, django_user_model):
 def test_independent_check_agrees_with_access_filter(documents):
     assert unauthorized_document_ids(documents.outsider) == {documents.restricted.id}
     assert unauthorized_document_ids(documents.reader) == set()
+
+
+def test_bank_account_and_uan_are_masked_next_to_their_labels():
+    """The real payslip layout: a viewer saw both numbers in full while the PAN was masked."""
+    text = "Bank Name\nAxis Bank Limited\nBank A/c No\n922010056676248\nUAN\n101933859550\nRegime Type"
+    found = {finding.entity_type for finding in pii_detector.detect_pii(text)}
+    assert {"IN_BANK_ACCOUNT", "IN_UAN"} <= found
+
+
+def test_a_bare_number_is_not_masked():
+    assert pii_detector.detect_pii("The release built 922010056676248 artifacts in the pipeline.") == []

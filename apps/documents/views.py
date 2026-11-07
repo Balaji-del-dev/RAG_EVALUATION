@@ -32,6 +32,7 @@ def _visible_documents(user):
 
 
 class DocumentUploadView(APIView):
+    throttle_scope = "upload"
     permission_classes = [IsAnalystOrAdmin]
     parser_classes = [MultiPartParser]
 
@@ -102,7 +103,9 @@ class DocumentStatusView(APIView):
                 "error": document.error,
                 "page_count": document.page_count,
                 "jobs": list(
-                    document.embedding_jobs.values("index_key", "status", "model_name", "chunk_count", "duration_ms")[:10]
+                    document.embedding_jobs.values("index_key", "status", "model_name", "chunk_count", "duration_ms")[
+                        :10
+                    ]
                 ),
             }
         )

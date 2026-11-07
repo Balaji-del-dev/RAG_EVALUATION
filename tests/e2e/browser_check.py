@@ -41,7 +41,11 @@ def visit(page, path, expect_title):
     page.wait_for_timeout(1800)
     title = page.inner_text("h1")
     overflow = page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
-    check(f"{expect_title} page opens cleanly", title.upper() == expect_title.upper() and not problems and overflow <= 0, "; ".join(problems[:2]) or (f"sideways scroll {overflow}px" if overflow > 0 else ""))
+    check(
+        f"{expect_title} page opens cleanly",
+        title.upper() == expect_title.upper() and not problems and overflow <= 0,
+        "; ".join(problems[:2]) or (f"sideways scroll {overflow}px" if overflow > 0 else ""),
+    )
 
 
 AXE = ROOT / "frontend" / "node_modules" / "axe-core" / "axe.min.js"
@@ -50,7 +54,9 @@ AXE = ROOT / "frontend" / "node_modules" / "axe-core" / "axe.min.js"
 def scan_accessibility(page, title):
     """Run axe-core's WCAG 2.1 A and AA rules, including colour contrast, on the page as rendered."""
     page.add_script_tag(path=str(AXE))
-    violations = page.evaluate("axe.run(document, {runOnly: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']}).then(r => r.violations.map(v => [v.id, v.nodes.length, v.nodes[0].target[0]]))")
+    violations = page.evaluate(
+        "axe.run(document, {runOnly: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']}).then(r => r.violations.map(v => [v.id, v.nodes.length, v.nodes[0].target[0]]))"
+    )
     check(f"{title} meets WCAG 2.1 AA", not violations, "; ".join(f"{a} x{b} at {c}" for a, b, c in violations)[:220])
 
 
@@ -108,7 +114,10 @@ with sync_playwright() as p:
     page.goto(BASE)
     page.wait_for_selector(".verdict", timeout=15000)
     check("It shows the overall score", page.locator(".verdict-number").count() == 1)
-    check("Attack results appear even if the latest run had none", "Not scored" not in page.locator("a.stage-row").last.inner_text())
+    check(
+        "Attack results appear even if the latest run had none",
+        "Not scored" not in page.locator("a.stage-row").last.inner_text(),
+    )
     check("The background worker is reported", "Background worker" in page.inner_text(".health"))
 
     print("\nChat")
@@ -130,26 +139,37 @@ with sync_playwright() as p:
     check("It appears in the history, highlighted", "annual leave" in page.inner_text(".history-row-on"))
     page.fill(".composer-box textarea", "and sick leave?")
     page.keyboard.press("Enter")
-    page.wait_for_function("document.querySelectorAll('.turn').length === 2 && !document.querySelector('.thinking')", timeout=240000)
+    page.wait_for_function(
+        "document.querySelectorAll('.turn').length === 2 && !document.querySelector('.thinking')", timeout=240000
+    )
     followup = page.locator(".answer").last.inner_text()
     check("A follow-up understands the conversation", "12" in followup, followup[:70])
     check("It shows how the follow-up was understood", "sick leave" in page.locator(".understood").last.inner_text())
     page.locator(".details-toggle").last.click()
     page.wait_for_selector(".turn-details")
     check("Sources open under the answer", page.locator(".turn-details .source").count() > 0)
-    check("Each retrieval stage is listed", page.locator(".pipeline-stage").count() >= 3 and "Vector search" in page.content())
+    check(
+        "Each retrieval stage is listed",
+        page.locator(".pipeline-stage").count() >= 3 and "Vector search" in page.content(),
+    )
     if page.locator(".answer .cite").count():
         check("A citation is clickable", True)
     shot(page, "chat_conversation")
     page.click(".history-toggle")
     page.wait_for_selector(".history", state="hidden")
-    check("The history can be collapsed", page.locator(".chat-history-closed").count() == 1 and page.locator(".rail").is_visible())
+    check(
+        "The history can be collapsed",
+        page.locator(".chat-history-closed").count() == 1 and page.locator(".rail").is_visible(),
+    )
     page.click(".history-toggle")
     page.wait_for_selector(".history", state="visible")
     check("The history can be expanded again", page.locator(".chat-history-closed").count() == 0)
     page.click(".chat-expand")
     page.wait_for_selector(".rail", state="hidden")
-    check("The chat expands to full screen", page.locator(".history").is_hidden() and page.locator(".composer-box").bounding_box()["width"] > 900)
+    check(
+        "The chat expands to full screen",
+        page.locator(".history").is_hidden() and page.locator(".composer-box").bounding_box()["width"] > 900,
+    )
     shot(page, "chat_expanded")
     page.click(".chat-expand")
     page.wait_for_selector(".rail", state="visible")
@@ -166,14 +186,19 @@ with sync_playwright() as p:
     page.goto(current)
     page.wait_for_selector(".turn")
     page.wait_for_function("document.querySelectorAll('.turn').length === 2")
-    check("Opening a past chat restores it", "annual leave" in page.locator(".bubble").first.inner_text() and page.locator(".answer").count() == 2)
+    check(
+        "Opening a past chat restores it",
+        "annual leave" in page.locator(".bubble").first.inner_text() and page.locator(".answer").count() == 2,
+    )
     page.fill(".history-search input", "zzzz-no-such-chat")
     page.wait_for_selector(".history-empty")
     check("History search filters the list", page.locator(".history-row").count() == 0)
     page.fill(".history-search input", "")
     page.fill(".composer-box textarea", "backups")
     page.click("text=Search only")
-    page.wait_for_function("document.querySelectorAll('.turn').length === 3 && !document.querySelector('.thinking')", timeout=60000)
+    page.wait_for_function(
+        "document.querySelectorAll('.turn').length === 3 && !document.querySelector('.thinking')", timeout=60000
+    )
     check("Search only shows sources without the model", "not saved" in page.locator(".answer-note").inner_text())
     page.locator(".history-row-on").hover()
     page.locator(".history-row-on .history-delete").click()
@@ -182,7 +207,9 @@ with sync_playwright() as p:
     check("Deleting the open chat returns to a new chat", page.locator(".turn").count() == 0)
     leftover = page.evaluate("fetch('/api/rag/sessions/?limit=500').then(r=>r.json()).then(d=>d.results.map(x=>x.id))")
     for session_id in set(leftover) - set(before):
-        page.evaluate(f"fetch('/api/rag/sessions/{session_id}/', {{method:'DELETE', headers:{{'X-CSRFToken': document.cookie.match(/csrftoken=([^;]+)/)[1]}}}})")
+        page.evaluate(
+            f"fetch('/api/rag/sessions/{session_id}/', {{method:'DELETE', headers:{{'X-CSRFToken': document.cookie.match(/csrftoken=([^;]+)/)[1]}}}})"
+        )
 
     print("\nDrilling in")
     page.goto(BASE + "answer")
@@ -208,8 +235,15 @@ with sync_playwright() as p:
     page.wait_for_selector(".roadmap-row")
     page.wait_for_timeout(800)
     rows = page.locator(".roadmap-row")
-    check("It lists all 37, in order", rows.count() == 37 and "Precision@K" in rows.first.inner_text() and "Error Rate" in rows.last.inner_text())
-    scored = sum(1 for index in range(rows.count()) if rows.nth(index).locator(".roadmap-score").inner_text().strip() not in ("", "–"))
+    check(
+        "It lists all 37, in order",
+        rows.count() == 37 and "Precision@K" in rows.first.inner_text() and "Error Rate" in rows.last.inner_text(),
+    )
+    scored = sum(
+        1
+        for index in range(rows.count())
+        if rows.nth(index).locator(".roadmap-score").inner_text().strip() not in ("", "–")
+    )
     check("All 37 have a score from the full run", scored == 37, f"{scored} scored")
     shot(page, "all_metrics")
 
@@ -286,7 +320,14 @@ with sync_playwright() as p:
             page.wait_for_timeout(300)
             page.keyboard.press("Escape")
             page.wait_for_selector(".profile-card", state="detached")
-            for path in ("", "chat", "compare?runs=" + page.evaluate("fetch('/api/evaluation/runs/').then(r=>r.json()).then(d=>d.results.map(x=>x.id).slice(0,3).join(','))")):
+            for path in (
+                "",
+                "chat",
+                "compare?runs="
+                + page.evaluate(
+                    "fetch('/api/evaluation/runs/').then(r=>r.json()).then(d=>d.results.map(x=>x.id).slice(0,3).join(','))"
+                ),
+            ):
                 page.goto(BASE + path)
                 page.wait_for_selector("h1")
                 page.wait_for_timeout(1000)
@@ -323,7 +364,10 @@ with sync_playwright() as p:
     check("A viewer does not see the restricted file", "salary_bands" not in page.content())
     page.goto(BASE + "answer")
     page.wait_for_timeout(2000)
-    check("A viewer sees scores but no answers", page.locator(".metric-row").count() > 0 and page.locator(".link-question").count() == 0)
+    check(
+        "A viewer sees scores but no answers",
+        page.locator(".metric-row").count() > 0 and page.locator(".link-question").count() == 0,
+    )
     shot(page, "viewer_answer")
 
     print("\nOn a tablet")
@@ -331,7 +375,10 @@ with sync_playwright() as p:
     for path, title in (("", "Overview"), ("documents", "Documents"), ("compare", "Compare")):
         visit(page, path, title)
         shot(page, f"tablet_{title.lower()}")
-    check("The tablet menu shows icons with accessible names", page.locator(".rail-link").first.get_attribute("aria-label") == "Overview")
+    check(
+        "The tablet menu shows icons with accessible names",
+        page.locator(".rail-link").first.get_attribute("aria-label") == "Overview",
+    )
 
     print("\nOn a phone")
     page.set_viewport_size({"width": 390, "height": 800})

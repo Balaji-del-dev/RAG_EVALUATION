@@ -8,6 +8,7 @@ enough of a passage's key terms.
 import csv
 import io
 import json
+from pathlib import PurePath
 
 from django.conf import settings
 from django.db import transaction
@@ -64,19 +65,48 @@ def _clean_case(raw: dict, position: int) -> dict:
     return {"question": question, "reference_answer": reference, "answerable": bool(answerable), "evidence": evidence}
 
 
+DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt", ".md", ".pptx", ".xlsx", ".png", ".jpg", ".jpeg"}
+
+
 def parse_dataset_file(data: bytes, filename: str) -> list[dict]:
     """JSON: a list of cases, or an object with a "cases" list. CSV: question, reference_answer, answerable,
-    evidence columns, with several evidence passages separated by ||."""
+    evidence columns, with several evidence passages separated by ||.
+
+    The type is checked before anything is read. A Word file dropped here used to fail with "'utf-8' codec can't
+    decode byte 0x90", which says nothing about the actual mistake."""
+    extension = PurePath(filename).suffix.lower()
+    if extension in DOCUMENT_EXTENSIONS:
+        raise InvalidDataset(
+            f"{filename} is a document, not a dataset. To ask questions about it, upload it on the Documents page. "
+            "A dataset is a list of test questions with their expected answers, in a .json or .csv file."
+        )
+    if extension not in {".json", ".csv"}:
+        raise InvalidDataset(f"{filename} is not a dataset file. Upload a .json or .csv file.")
+    if extension == ".json":
+        try:
+            parsed = json.loads(data.decode("utf-8-sig"))
+        except UnicodeDecodeError as exc:
+            raise InvalidDataset(f"{filename} is not UTF-8 text. Save it as UTF-8 and upload it again.") from exc
+        except json.JSONDecodeError as exc:
+            raise InvalidDataset(
+                f"{filename} is not valid JSON: {exc.msg} at line {exc.lineno}, column {exc.colno}."
+            ) from exc
+        if isinstance(parsed, dict):
+            if not isinstance(parsed.get("cases"), list):
+                raise InvalidDataset(f'{filename} is a JSON object without a "cases" list.')
+            return parsed["cases"]
+        if not isinstance(parsed, list):
+            raise InvalidDataset(f"{filename} must hold a list of cases.")
+        return parsed
     try:
         text = data.decode("utf-8-sig")
-        if filename.lower().endswith(".json"):
-            parsed = json.loads(text)
-            return parsed["cases"] if isinstance(parsed, dict) else parsed
-        if filename.lower().endswith(".csv"):
-            return list(csv.DictReader(io.StringIO(text)))
-    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, csv.Error) as exc:
-        raise InvalidDataset(f"Could not read {filename}: {exc}") from exc
-    raise InvalidDataset("Upload a .json or .csv file")
+    except UnicodeDecodeError:
+        # Excel on Windows saves "CSV" in the Windows code page, not UTF-8.
+        text = data.decode("cp1252", errors="replace")
+    try:
+        return list(csv.DictReader(io.StringIO(text)))
+    except csv.Error as exc:
+        raise InvalidDataset(f"{filename} is not a readable CSV file: {exc}") from exc
 
 
 @transaction.atomic
@@ -84,7 +114,9 @@ def create_dataset(*, name: str, version: str, description: str, cases: list[dic
     if not isinstance(cases, list) or not cases:
         raise InvalidDataset("A dataset needs at least one case")
     if EvaluationDataset.objects.filter(name=name, version=version).exists():
-        raise InvalidDataset(f"Dataset '{name}' version {version} already exists. Datasets are immutable: use a new version.")
+        raise InvalidDataset(
+            f"Dataset '{name}' version {version} already exists. Datasets are immutable: use a new version."
+        )
     cleaned = [_clean_case(raw, position) for position, raw in enumerate(cases, start=1)]
     dataset = EvaluationDataset.objects.create(name=name, version=version, description=description, created_by=user)
     EvaluationCase.objects.bulk_create(EvaluationCase(dataset=dataset, **case) for case in cleaned)

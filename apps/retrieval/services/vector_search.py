@@ -88,7 +88,9 @@ def delete_document(config, document_id: int) -> None:
         if _client().collection_exists(config.index_name):
             _client().delete(
                 config.index_name,
-                FilterSelector(filter=Filter(must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))])),
+                FilterSelector(
+                    filter=Filter(must=[FieldCondition(key="document_id", match=MatchValue(value=document_id))])
+                ),
                 wait=True,
             )
     except QDRANT_ERRORS as exc:

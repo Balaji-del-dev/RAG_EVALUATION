@@ -68,7 +68,14 @@ export default function Datasets({ canEdit }) {
           note="JSON or CSV, with fields question, reference_answer, answerable and evidence. In CSV, separate evidence passages with ||."
         >
           <form className="form-row" onSubmit={upload}>
-            <FileDrop inputRef={fileInput} accept=".json,.csv" hint="JSON or CSV" file={file} onFile={setFile} />
+            <FileDrop
+              inputRef={fileInput}
+              accept=".json,.csv"
+              hint="JSON or CSV"
+              file={file}
+              onFile={setFile}
+              wrongTypeHint="To ask questions about a document, upload it on the Documents page."
+            />
             <Field label="Name">
               <input value={name} onChange={(e) => setName(e.target.value)} required maxLength={255} />
             </Field>

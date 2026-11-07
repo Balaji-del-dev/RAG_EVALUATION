@@ -10,7 +10,12 @@ def latency_value(values: list[float]) -> MetricValue | None:
         return None
     return MetricValue(
         percentile(values, 95),
-        {"p50": percentile(values, 50), "p95": percentile(values, 95), "p99": percentile(values, 99), "count": len(values)},
+        {
+            "p50": percentile(values, 50),
+            "p95": percentile(values, 95),
+            "p99": percentile(values, 99),
+            "count": len(values),
+        },
     )
 
 

@@ -1,5 +1,6 @@
 """The retrieval pipeline: BM25 + vector -> RRF -> permission re-check -> rerank -> MMR -> top K."""
 
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -31,6 +32,87 @@ class RetrievalResult:
     @property
     def chunk_ids(self) -> list[int]:
         return [chunk.chunk_id for chunk in self.chunks]
+
+
+# A table read from a PDF comes out as all its labels, then all its values, sometimes split between two chunks:
+# "Days In Month (A) / Arrear Days (B) / LOPR Days(C) / LOP Days (D) / Net Days Worked" and then "31.0 / 0.0 / 0.0 / 0.0
+# / 31.0". Given the labels without the values, the model reported a rupee amount from elsewhere as the LOP days.
+MIN_TABLE_ROWS = 3
+MAX_LABEL_LENGTH = 40
+NUMBER_RE = re.compile(r"[-+]?(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d+)?")
+
+
+def _is_number(line: str) -> bool:
+    return bool(NUMBER_RE.fullmatch(line.strip()))
+
+
+def _is_label(line: str) -> bool:
+    text = line.strip()
+    return bool(text) and len(text) <= MAX_LABEL_LENGTH and not re.search(r"\d", text)
+
+
+def pair_table_values(text: str) -> str:
+    """Rejoin a run of labels with the run of values that follows it, when the counts match: "LOP Days (D): 0.0".
+    A label line starting with "(" continues the one before, as in "Net Days Worked / (E = A + B + C - D)"."""
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        labels, j = [], i
+        while j < len(lines) and _is_label(lines[j]):
+            if lines[j].strip().startswith("(") and labels:
+                labels[-1] += " " + lines[j].strip()
+            else:
+                labels.append(lines[j].strip())
+            j += 1
+        values, k = [], j
+        while k < len(lines) and _is_number(lines[k]):
+            values.append(lines[k].strip())
+            k += 1
+        # The values must visibly end. A run cut off by the end of a chunk may be missing some, and pairing what
+        # is left would put numbers against the wrong labels.
+        if len(labels) >= MIN_TABLE_ROWS and len(values) == len(labels) and k < len(lines):
+            out.extend(f"{label}: {value}" for label, value in zip(labels, values, strict=True))
+            i = k
+        else:
+            # The whole run of labels, or nothing: retrying from inside it paired "Basic Salary" with a year-to-date
+            # figure once the remaining count happened to match.
+            out.extend(lines[i : max(j, i + 1)])
+            i = max(j, i + 1)
+    return "\n".join(out)
+
+
+def join_split_table(text: str, next_text: str) -> str:
+    """A chunk ending with a table's labels gets the next chunk's values, without the overlap the two share."""
+    first, second = text.split("\n"), next_text.split("\n")
+    if len(first) < MIN_TABLE_ROWS or not all(_is_label(line) for line in first[-MIN_TABLE_ROWS:]):
+        return text
+    overlap = next((k for k in range(min(len(first), len(second)), 0, -1) if first[-k:] == second[:k]), 0)
+    rest = second[overlap:]
+    first_value = next((line for line in rest if not _is_label(line)), "")
+    return "\n".join(first + rest) if _is_number(first_value) else text
+
+
+def without_overlap(first: str, second: str) -> str:
+    """The second chunk's text without the lines it repeats from the end of the first."""
+    a, b = first.split("\n"), second.split("\n")
+    overlap = next((k for k in range(min(len(a), len(b)), 0, -1) if a[-k:] == b[:k]), 0)
+    return "\n".join(b[overlap:])
+
+
+def text_with_tables(row: DocumentChunk, index_key: str) -> str:
+    """The chunk's text, with a table split from the next chunk joined back and its labels paired with values."""
+    text = row.chunk_text
+    lines = text.split("\n")
+    if len(lines) >= MIN_TABLE_ROWS and all(_is_label(line) for line in lines[-MIN_TABLE_ROWS:]):
+        following = (
+            DocumentChunk.objects.filter(
+                document_id=row.document_id, index_key=index_key, chunk_index=row.chunk_index + 1
+            )
+            .values_list("chunk_text", flat=True)
+            .first()
+        )
+        if following:
+            text = join_split_table(text, following)
+    return pair_table_values(text)
 
 
 def _timed(result: RetrievalResult, stage: str, started: float) -> None:
@@ -74,12 +156,9 @@ def retrieve(query: str, config: RagConfig, allowed_document_ids: list[int]) -> 
         return result
 
     # Second enforcement point: load only rows whose document is still allowed and still indexed.
-    rows = (
-        DocumentChunk.objects.filter(
-            id__in=[chunk_id for chunk_id, _ in fused], index_key=config.index_key, document_id__in=allowed
-        )
-        .select_related("document")
-    )
+    rows = DocumentChunk.objects.filter(
+        id__in=[chunk_id for chunk_id, _ in fused], index_key=config.index_key, document_id__in=allowed
+    ).select_related("document")
     by_id = {row.id: row for row in rows}
     candidates = [(by_id[chunk_id], score) for chunk_id, score in fused if chunk_id in by_id]
 
@@ -114,7 +193,14 @@ def retrieve(query: str, config: RagConfig, allowed_document_ids: list[int]) -> 
         candidates = candidates[: config.top_k]
 
     result.chunks = [
-        RetrievedChunk(row.id, row.document_id, row.document.filename, row.page_number, row.chunk_text, score)
+        RetrievedChunk(
+            row.id,
+            row.document_id,
+            row.document.filename,
+            row.page_number,
+            text_with_tables(row, config.index_key),
+            score,
+        )
         for row, score in candidates
     ]
     return result

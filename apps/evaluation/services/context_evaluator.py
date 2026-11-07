@@ -67,7 +67,9 @@ class ContextRelevancy(BaseMetricEvaluator):
         vectors = embeddings.embed_texts([ctx.question, *sentences], model)
         threshold = settings.EVALUATION["CONTEXT_RELEVANCY_THRESHOLD"]
         question = vectors[0]
-        relevant = sum(1 for vector in vectors[1:] if sum(a * b for a, b in zip(question, vector, strict=True)) >= threshold)
+        relevant = sum(
+            1 for vector in vectors[1:] if sum(a * b for a, b in zip(question, vector, strict=True)) >= threshold
+        )
         return safe_divide(relevant, len(sentences))
 
 

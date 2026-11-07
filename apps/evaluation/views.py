@@ -61,7 +61,9 @@ class DatasetViewSet(DestroyModelMixin, ReadOnlyModelViewSet):
         serializer.is_valid(raise_exception=True)
         upload = serializer.validated_data.pop("file")
         cases = dataset_manager.parse_dataset_file(upload.read(), upload.name)
-        return self._created(dataset_manager.create_dataset(**serializer.validated_data, cases=cases, user=request.user))
+        return self._created(
+            dataset_manager.create_dataset(**serializer.validated_data, cases=cases, user=request.user)
+        )
 
 
 class EvaluationRunViewSet(ModelViewSet):

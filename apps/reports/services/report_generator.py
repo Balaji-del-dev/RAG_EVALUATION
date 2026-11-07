@@ -29,14 +29,17 @@ def dashboard_summary() -> dict:
     return {
         "documents": {
             "total": Document.objects.count(),
-            "by_status": {row["status"]: row["count"] for row in Document.objects.values("status").annotate(count=Count("id"))},
+            "by_status": {
+                row["status"]: row["count"] for row in Document.objects.values("status").annotate(count=Count("id"))
+            },
         },
         "chunks": DocumentChunk.objects.count(),
         "datasets": EvaluationDataset.objects.count(),
         "runs": {
             "total": EvaluationRun.objects.count(),
             "by_status": {
-                row["status"]: row["count"] for row in EvaluationRun.objects.values("status").annotate(count=Count("id"))
+                row["status"]: row["count"]
+                for row in EvaluationRun.objects.values("status").annotate(count=Count("id"))
             },
         },
         "latest_run": _run_card(latest) if latest else None,
@@ -80,7 +83,9 @@ def run_report(run: EvaluationRun) -> dict:
                 "abstained": result.abstained,
                 "blocked": result.blocked,
                 "total_ms": result.total_ms,
-                "scores": {score.metric.name: score.score for score in result.scores.all() if score.framework == "builtin"},
+                "scores": {
+                    score.metric.name: score.score for score in result.scores.all() if score.framework == "builtin"
+                },
             }
             for result in run.results.select_related("case").prefetch_related("scores__metric")
         ],

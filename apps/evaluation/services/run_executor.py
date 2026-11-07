@@ -84,7 +84,9 @@ def build_snapshot(run: EvaluationRun) -> dict:
         "bm25_backend": bm25_backend().name,
         "prompt": {"version": config.prompt_version, "text": PROMPTS[config.prompt_version]},
         "llm_digest": llm_gateway.model_digest(config.llm_model),
-        "dataset": {"id": run.dataset_id, "name": run.dataset.name, "version": run.dataset.version} if run.dataset else None,
+        "dataset": {"id": run.dataset_id, "name": run.dataset.name, "version": run.dataset.version}
+        if run.dataset
+        else None,
         "corpus": sorted(corpus_for(run)) if run.dataset else None,
         "thresholds": settings.EVALUATION,
         "packages": _package_versions(),
@@ -245,7 +247,20 @@ def summarize(run: EvaluationRun) -> dict:
         cursor.execute(SUMMARY_SQL, [run.id])
         rows = cursor.fetchall()
     metrics = {}
-    for name, framework, category, display_name, higher_is_better, unit, order, priority, mean, low, high, count in rows:
+    for (
+        name,
+        framework,
+        category,
+        display_name,
+        higher_is_better,
+        unit,
+        order,
+        priority,
+        mean,
+        low,
+        high,
+        count,
+    ) in rows:
         key = name if framework == "builtin" else f"{name}:{framework}"
         metrics[key] = {
             "metric": name,

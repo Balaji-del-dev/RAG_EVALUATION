@@ -1,5 +1,7 @@
 """Django settings. All deployment-specific values come from config.env (backed by .env)."""
 
+from datetime import timedelta
+
 from config.env import BASE_DIR, env, split_csv
 
 SECRET_KEY = env.SECRET_KEY
@@ -21,6 +23,8 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "django_filters",
+    "axes",
+    "django_prometheus",
     # Local applications
     "apps.accounts",
     "apps.common",
@@ -34,6 +38,9 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # First and last, so that request counts and latencies cover everything in between.
+    "django_prometheus.middleware.PrometheusBeforeMiddleware",
+    "apps.common.middleware.RequestIdMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
@@ -43,6 +50,9 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # After the views' middleware, so that it sees the outcome of each sign-in attempt.
+    "axes.middleware.AxesMiddleware",
+    "django_prometheus.middleware.PrometheusAfterMiddleware",
 ]
 
 ROOT_URLCONF = "config.urls"
@@ -110,15 +120,50 @@ CACHES = {
 }
 
 REST_FRAMEWORK = {
-    "DEFAULT_AUTHENTICATION_CLASSES": ["rest_framework.authentication.SessionAuthentication"],
+    # Sessions for the dashboard, JWTs for API clients that cannot keep a cookie. Both carry the same user, so the
+    # same roles and document permissions apply.
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "rest_framework.authentication.SessionAuthentication",
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.IsAuthenticated"],
     "DEFAULT_FILTER_BACKENDS": ["django_filters.rest_framework.DjangoFilterBackend"],
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.LimitOffsetPagination",
     "PAGE_SIZE": 50,
     "EXCEPTION_HANDLER": "apps.common.exceptions.api_exception_handler",
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"],
-    "DEFAULT_THROTTLE_RATES": {"login": "10/min"},
+    # Counted in Redis. "query" covers chat and search, which each hold the CPU for seconds; "user" is a ceiling for
+    # everything else, high enough for the dashboard's polling.
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",
+        "rest_framework.throttling.UserRateThrottle",
+        "rest_framework.throttling.ScopedRateThrottle",
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "login": "10/min",
+        "anon": "60/min",
+        "user": "600/min",
+        "query": env.QUERY_RATE_LIMIT,
+        "upload": "60/hour",
+        # A Word or PDF file starts LibreOffice for a second or two.
+        "download": "120/hour",
+    },
 }
+
+SIMPLE_JWT = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=1),
+    "AUTH_HEADER_TYPES": ("Bearer",),
+}
+
+# Sign-in lockout (django-axes). Counted per username and address together: all users of this machine share one
+# address, so counting by address alone would lock everyone out after one person's typos.
+AUTHENTICATION_BACKENDS = ["axes.backends.AxesStandaloneBackend", "django.contrib.auth.backends.ModelBackend"]
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = timedelta(minutes=15)
+AXES_LOCKOUT_PARAMETERS = [["username", "ip_address"]]
+AXES_RESET_ON_SUCCESS = True
+AXES_LOCKOUT_CALLABLE = "apps.accounts.lockout.lockout_response"
 
 # Celery. A single worker with the solo pool keeps one copy of the ML models in RAM.
 CELERY_BROKER_URL = env.CELERY_BROKER_URL
@@ -154,8 +199,9 @@ EVALUATION = {
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
-    "formatters": {"plain": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"}},
-    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "filters": {"request_id": {"()": "apps.common.middleware.RequestIdLogFilter"}},
+    "formatters": {"plain": {"format": "%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain", "filters": ["request_id"]}},
     "root": {"handlers": ["console"], "level": "INFO"},
     "loggers": {
         "LiteLLM": {"level": "WARNING"},

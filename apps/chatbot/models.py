@@ -18,6 +18,7 @@ class ChatMessage(TimeStampedModel):
     session = models.ForeignKey(ChatSession, on_delete=models.CASCADE, related_name="messages")
     question = models.TextField()
     standalone_question = models.TextField(blank=True, help_text="A follow-up rewritten as a complete question")
+    answer_format = models.CharField(max_length=40, blank=True, help_text="The layout asked for: a key in formats.py")
     answer = models.TextField(blank=True)
     citations = models.JSONField(default=list, blank=True)
     abstained = models.BooleanField(default=False)
@@ -26,10 +27,28 @@ class ChatMessage(TimeStampedModel):
     blocked = models.BooleanField(default=False)
     block_reason = models.CharField(max_length=255, blank=True)
     guard_findings = models.JSONField(default=dict, blank=True)
+    request_id = models.CharField(max_length=64, blank=True, db_index=True)
 
     class Meta:
         db_table = "chat_messages"
         ordering = ["created_at"]
+
+
+class AnswerFeedback(TimeStampedModel):
+    """A thumbs up or down from the person who asked. Low-rated answers are the place to look for new test cases."""
+
+    class Rating(models.TextChoices):
+        UP = "up"
+        DOWN = "down"
+
+    message = models.ForeignKey(ChatMessage, on_delete=models.CASCADE, related_name="feedback")
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="answer_feedback")
+    rating = models.CharField(max_length=4, choices=Rating.choices)
+    comment = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "answer_feedback"
+        constraints = [models.UniqueConstraint(fields=["message", "user"], name="one_rating_per_user_per_answer")]
 
 
 class LLMRun(models.Model):

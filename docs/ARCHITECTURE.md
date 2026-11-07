@@ -107,6 +107,18 @@ and `v3` got 8. On the 22-question dataset, with the file-name search below in t
 Answer Correctness rose from 0.81 to 0.85 and Completeness from 0.70 to 0.85, while Faithfulness fell from 0.90 to 0.87
 and Abstention Accuracy from 0.95 to 0.91 (one unanswerable question got a confident "no").
 
+**A month in a question is enforced.** Asked "how many LOP on this month?" after a question about May, the chat
+answered from the February payslip, which matches every other word. Now "this month" is filled in from the
+conversation by rule, a question naming a month searches only documents that name it, and an answer about another
+month is withheld. The conversation itself is kept in `ChatSession`, in Postgres, and the screen sends its id with
+every message, so this needs no separate LangGraph checkpointer.
+
+**A table answer must match its row.** Tables in PDFs come out as all the labels, then all the values, sometimes
+split between chunks, so `hybrid_search.text_with_tables` joins them back as "LOP Days (D): 0.0". Even then the small
+model said "no information" in front of that line, or reported "LOPR Days" (a reversal) as the LOP days. So when a
+question names a row, by its abbreviation or its whole label, an answer without that row's number is replaced by the
+row itself, quoted. Reading short documents whole was tried and dropped: it made the model miss rows it found in chunks.
+
 **Chunks are searched with their document's name.** The work history in a resume never says whose it is, so
 "balamurugan experience" found an email that repeats the name and says nothing about experience. BM25 and the reranker
 now see the file name with each chunk. The vector index does not, as that would mean embedding everything again.
@@ -118,6 +130,31 @@ readable documents only, so it cannot widen access.
 
 **A declined answer says why.** Declining is correct when the documents lack the answer, but "I don't know" alone looks
 like a fault when they might not. The chat shows the reason: an unknown name, nothing relevant, or the model's decision.
+
+**Sign-in lockout counts username and address together.** Every user of a single machine comes from 127.0.0.1, so
+counting failures by address alone would lock everyone out after one person's typos. The cost is that someone who
+knows a username can lock that account for 15 minutes by guessing wrong.
+
+**Streamed text is guarded one sentence at a time.** Masking only the finished answer would put an email address or
+phone number on screen before the guard saw it. So the stream holds text back until a sentence ends, runs the output
+guard on it, and sends the masked sentence. After a sentence the guard blocks, nothing more is sent. The checks that
+need the whole answer, such as the month and table-row checks, run at the end, and the final answer replaces what was
+streamed. Evaluation runs do not stream, so their answers come from the same code path as before.
+
+**The model writes Markdown; everything else is built by rule.** Asked for HTML, `qwen2.5:1.5b` repeated "```html"
+on every line until it ran out of tokens. Asked for Mermaid, it looped through invented approval steps and wrote mind
+maps Mermaid cannot read. So each of the 88 formats asks for Markdown that the model writes reliably, and the app
+converts it: data formats from its table or list, diagrams and charts from its steps, nested list or table, files
+through LibreOffice and python-pptx, and interactive layouts in the chat screen. An answer stuck repeating itself is
+asked for once more as plain Markdown. A longer format gets a smaller source budget, so that prompt and answer still fit
+`OLLAMA_NUM_CTX`. Without a format, nothing changes, so evaluation scores are unaffected.
+
+**Chart colours are a validated palette.** Charts use eight categorical colours in a fixed order, with a light and a
+dark set, checked for colour-blind separation and contrast against each theme's surface. Three light-theme colours sit
+below 3:1 on white, so charts always print their values, and the table they were drawn from stays below them.
+
+**Greetings skip the search.** "hi" used to be searched for and answered from whatever matched. Short greetings and
+thanks now get a fixed reply, with no search and no LLM call. A greeting followed by a question is a question.
 
 **Security is measured on outcomes.** Tests run as a least-privilege probe user. The check for forbidden
 chunks is written separately from `Document.accessible_to`, because a test that reuses the code under test
@@ -148,8 +185,9 @@ cannot catch a bug in it.
   with either backend.
 - **Spelling correction can pick the wrong word.** It replaces a word found in no readable document with a close one,
   so "contract" could become "contact" if only the second exists. The chat shows "Understood as" so that this is visible.
-- **Chat answers appear all at once, not word by word.** The screen shows progress and the elapsed time instead.
-  Word-by-word display needs a streaming endpoint, and the output guard would then have to check text before showing it.
+- **A streamed answer can change at the end.** When a check after generation replaces the answer, for example with
+  a quoted table row, the text that was streamed is swapped for the final one.
+- **Prometheus metrics are per process.** With several gunicorn workers, set `PROMETHEUS_MULTIPROC_DIR`.
 
 ## Database
 

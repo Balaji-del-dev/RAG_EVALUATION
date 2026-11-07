@@ -31,6 +31,10 @@ def _tracer():
 
 @contextmanager
 def span(name: str, **attributes):
+    from apps.common.middleware import current_request_id
+
+    if current_request_id.get():
+        attributes.setdefault("request.id", current_request_id.get())
     with _tracer().start_as_current_span(name, attributes=attributes) as current:
         yield current
 
@@ -42,9 +46,7 @@ def _langfuse():
     try:
         from langfuse import Langfuse
 
-        return Langfuse(
-            public_key=env.LANGFUSE_PUBLIC_KEY, secret_key=env.LANGFUSE_SECRET_KEY, host=env.LANGFUSE_HOST
-        )
+        return Langfuse(public_key=env.LANGFUSE_PUBLIC_KEY, secret_key=env.LANGFUSE_SECRET_KEY, host=env.LANGFUSE_HOST)
     except Exception:
         logger.exception("Could not start Langfuse; continuing without it")
         return None
@@ -63,9 +65,7 @@ def record_generation(*, name, model, question, answer, prompt_tokens, completio
         with client.start_as_current_observation(
             as_type="generation", name=name, model=model, input=question, metadata=metadata
         ) as generation:
-            generation.update(
-                output=answer, usage_details={"input": prompt_tokens, "output": completion_tokens}
-            )
+            generation.update(output=answer, usage_details={"input": prompt_tokens, "output": completion_tokens})
         client.flush()
     except Exception:
         logger.exception("Langfuse export failed; the question itself is unaffected")

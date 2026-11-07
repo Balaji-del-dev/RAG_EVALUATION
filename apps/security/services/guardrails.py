@@ -40,9 +40,7 @@ def check_input(question: str) -> GuardResult:
         return GuardResult(True, "question_too_long", question)
     verdict = prompt_injection.scan_input(question)
     if verdict.flagged:
-        return GuardResult(
-            True, verdict.category, question, {"rule": verdict.rule, "category": verdict.category}
-        )
+        return GuardResult(True, verdict.category, question, {"rule": verdict.rule, "category": verdict.category})
     return GuardResult(False, "", question)
 
 

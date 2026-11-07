@@ -108,7 +108,9 @@ class EvaluationRunSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        if attrs.get("run_type", EvaluationRun.RunType.QUALITY) != EvaluationRun.RunType.SECURITY and not attrs.get("dataset"):
+        if attrs.get("run_type", EvaluationRun.RunType.QUALITY) != EvaluationRun.RunType.SECURITY and not attrs.get(
+            "dataset"
+        ):
             raise serializers.ValidationError({"dataset": "Required for quality and full runs"})
         return attrs
 
